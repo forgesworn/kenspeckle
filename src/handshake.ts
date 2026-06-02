@@ -20,14 +20,14 @@
 //
 // UTF-8 ⇄ bytes uses the built-in TextEncoder/TextDecoder (globals in node>=22 + browsers) — no
 // dependency, no `bytesToUtf8`-lives-in-which-package nuance. No console output anywhere.
-
-// `TextEncoder`/`TextDecoder` are WHATWG-Encoding web globals present in node>=22 and every browser,
-// but the house tsconfig's `lib: ["ES2022"]` (no DOM/WebWorker, no @types/node) doesn't declare them.
-// Declaring `WebWorker` lib-wide would pull a broad surface into a pure-data package; instead we make
-// a minimal, self-documenting ambient declaration of just the two constructors we use. Runtime is
-// unaffected (these are real globals); this only teaches `tsc` their shape.
-declare const TextEncoder: { new (): { encode(input?: string): Uint8Array } }
-declare const TextDecoder: { new (label?: string): { decode(input?: Uint8Array): string } }
+//
+// `TextEncoder`/`TextDecoder` (and, for ./ken, `fetch`/`Response`) are WHATWG web globals present in
+// node>=22 and every browser. Their TYPES come from `@types/node` (a devDependency), enabled via
+// `tsconfig.json`'s `"types": ["node"]`. K-3 hand-rolled a per-file ambient for the two text
+// constructors; K-5 needed `fetch`/`Response` typed too (those can't be cleanly hand-rolled), so the
+// per-file ambient was retired in favour of one project-wide `@types/node` opt-in. Runtime is
+// unaffected (these are real globals); @types/node only teaches `tsc` their shape and adds NO runtime
+// dependency (it's a devDep, and its declarations emit nothing into `dist/`).
 
 /** The persona/pubkey exchange that bootstraps a kith bond. */
 export interface HandshakePayload {
