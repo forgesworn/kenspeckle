@@ -1,0 +1,37 @@
+{
+  "name": "kindred",
+  "version": "0.1.0",
+  "description": "Verified relationships across three social distances — kin (family), kith (mutually verified), ken (one-way recognised) — with handshake, bond ceremony, ken trust-store, and local presence discovery.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".":            { "types": "./dist/index.d.ts",     "default": "./dist/index.js" },
+    "./handshake":  { "types": "./dist/handshake.d.ts", "default": "./dist/handshake.js" },
+    "./bond":       { "types": "./dist/bond.d.ts",      "default": "./dist/bond.js" },
+    "./ken":        { "types": "./dist/ken.d.ts",       "default": "./dist/ken.js" },
+    "./discovery":  { "types": "./dist/discovery.d.ts", "default": "./dist/discovery.js" },
+    "./invite":     { "types": "./dist/invite.d.ts",    "default": "./dist/invite.js" }
+  },
+  "files": ["dist", "LICENSE", "llms.txt"],
+  "scripts": { "build": "tsc", "test": "vitest run", "test:watch": "vitest", "typecheck": "tsc --noEmit", "prepublishOnly": "npm run build" },
+  "keywords": ["nostr", "relationships", "verification", "ecdh", "spoken-token", "kith", "kin", "ken", "presence"],
+  "author": "forgesworn",
+  "license": "MIT",
+  "sideEffects": false,
+  "engines": { "node": ">=22" },
+  "dependencies": {
+    "tessera-kit": "^0.1.0",
+    "spoken-token": "^2.0.4",
+    "nostr-attestations": "^2.5.5",
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.0.1",
+    "@noble/ciphers": "^2.0.0",
+    "@scure/base": "^2.0.0"
+  },
+  "peerDependencies": { "nostr-tools": "^2.0.0" },
+  "devDependencies": { "typescript": "^6.0.2", "vitest": "^4.1.0", "nostr-tools": "^2.0.0" },
+  "publishConfig": { "provenance": true },
+  "funding": { "type": "lightning", "url": "lightning:thedonkey@strike.me" },
+  "repository": { "type": "git", "url": "https://github.com/forgesworn/kindred.git" }
+}
