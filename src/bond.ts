@@ -161,13 +161,33 @@ export function bondWords(
   return { mine: pair[a]!, theirs: pair[b]! }
 }
 
+/** Max clock-skew window kindred will honour, mirroring spoken-token's own `MAX_TOLERANCE = 10`. A
+ *  larger `tolerance` is clamped to this (it is a dev arg, not attacker input — fail-soft, do not throw)
+ *  so a bogus value can never spin an unbounded re-derivation loop. */
+export const MAX_BOND_TOLERANCE = 10
+
+/** Coerce a caller-supplied `tolerance` to a safe window size: integer, in `[0, MAX_BOND_TOLERANCE]`.
+ *  A negative / NaN / non-finite / fractional value becomes `0` (exact-counter match); anything above the
+ *  cap is clamped down. Pure + total — never throws (the `verifyBondWord` `{ok}` contract forbids it). */
+function clampTolerance(tolerance: number | undefined): number {
+  if (tolerance === undefined) return 0
+  // `Math.trunc(NaN) === NaN`, and `NaN < 0` is false, so guard NaN/Infinity explicitly first.
+  if (!Number.isFinite(tolerance)) return 0
+  const t = Math.trunc(tolerance)
+  if (t <= 0) return 0
+  return t > MAX_BOND_TOLERANCE ? MAX_BOND_TOLERANCE : t
+}
+
 /** Options for `verifyBondWord` — a superset of `BondWordsOpts` adding a clock-skew `tolerance` window.
  *  `namespace` carries the same signet-me-compat meaning as on `bondWords`. */
 export interface VerifyBondWordOpts extends BondWordsOpts {
   /** Clock-skew window (in counter steps), like signet-me's `SIGNET_ME_TOLERANCE`. Default `0` (exact
    *  match only). Tolerance `t` accepts `spoken` if it equals the counterparty's word at ANY counter in
-   *  `[counter - t, counter + t]`. Each candidate is constant-time-compared; the boolean is the OR of
-   *  those compares, so timing does not leak WHICH counter matched beyond the verdict itself. */
+   *  `[counter - t, counter + t]`, the window CLAMPED to the valid uint32 counter range `[0, 0xFFFFFFFF]`
+   *  (so a boundary `counter` never feeds spoken-token an out-of-range counter). `t` is itself coerced to
+   *  an integer in `[0, MAX_BOND_TOLERANCE]` (= 10): negative/NaN → `0`, larger → `10`. Each candidate is
+   *  constant-time-compared; the boolean is the OR of those compares, so timing does not leak WHICH
+   *  counter matched beyond the verdict itself. */
   tolerance?: number
 }
 
@@ -184,6 +204,14 @@ export interface VerifyBondWordOpts extends BondWordsOpts {
  * Every candidate counter is checked with a constant-time compare and the results OR-accumulated WITHOUT
  * early-return, so the timing does not leak which counter matched beyond the final boolean.
  *
+ * **Fail-soft window clamping (the `{ok}` contract — this function MUST NOT throw on a valid-shaped
+ * call).** Two clamps keep it total: (1) `tolerance` is coerced to an integer in `[0, MAX_BOND_TOLERANCE]`
+ * (negative/NaN → `0`, larger → `10`), so a bogus dev arg can't drive an unbounded loop; (2) the candidate
+ * counter range is clamped to the valid uint32 span `[0, 0xFFFFFFFF]`. Without (2) a boundary `counter`
+ * (e.g. `counter = 0, tolerance = 1` → `-1`, or `counter = 0xFFFFFFFF, tolerance = 1` → `0x100000000`)
+ * would feed spoken-token's `counterBe32` an out-of-range value and throw a `RangeError` — breaking the
+ * `{ok}` contract. The clamp simply skips the out-of-range counters; the in-range ones are still checked.
+ *
  * **signet-me compatibility.** Pass `{ namespace: 'signet:me', tolerance: N }` to verify against the
  * words signet-app's `signet-me` would produce (for an un-migrated peer).
  *
@@ -195,7 +223,7 @@ export interface VerifyBondWordOpts extends BondWordsOpts {
  * @param opts      - Optional `{ namespace?, tolerance? }` — additive, defaults reproduce the existing
  *                    behaviour (`'kindred:bond'`, exact-counter `tolerance: 0`).
  * @returns `{ ok: true }` iff `spoken` equals the expected counterparty word (within tolerance), else
- *          `{ ok: false }`.
+ *          `{ ok: false }`. Never throws on a valid-shaped call.
  */
 export function verifyBondWord(
   secretHex: string,
@@ -205,14 +233,22 @@ export function verifyBondWord(
   spoken: string,
   opts?: VerifyBondWordOpts,
 ): { ok: boolean } {
-  const tolerance = opts?.tolerance ?? 0
+  const tolerance = clampTolerance(opts?.tolerance)
   const wordOpts: BondWordsOpts = { namespace: opts?.namespace }
-  // Accumulate an OR of constant-time compares across the full [counter-t, counter+t] window WITHOUT
-  // early-return, so timing can't leak which counter (if any) matched beyond the final boolean. `t` is
-  // small (a clock-skew window); the loop always runs the same number of compares for a given tolerance.
+  // Clamp the candidate counter window to the valid uint32 range so a boundary `counter` never feeds
+  // spoken-token's `counterBe32` an out-of-range value (which would throw, breaking the {ok} contract).
+  // `counter` may itself be fractional/out-of-range (dev arg); `Math.trunc` + the clamp keep `lo`/`hi`
+  // as integers in [0, 0xFFFFFFFF]. If `counter` is wholly outside the range, `lo > hi` and the loop is a
+  // no-op → `{ ok: false }` (no spoken word can match a counter that doesn't exist) — still fail-soft.
+  const centre = Number.isFinite(counter) ? Math.trunc(counter) : 0
+  const lo = Math.max(0, centre - tolerance)
+  const hi = Math.min(0xffffffff, centre + tolerance)
+  // Accumulate an OR of constant-time compares across the clamped window WITHOUT early-return, so timing
+  // can't leak which counter (if any) matched beyond the final boolean. The window is small (a clock-skew
+  // window, ≤ 2·MAX_BOND_TOLERANCE+1 candidates), so the loop is bounded regardless of caller input.
   let matched = false
-  for (let offset = -tolerance; offset <= tolerance; offset++) {
-    const theirs = bondWords(secretHex, aPubHex, bPubHex, counter + offset, wordOpts).theirs
+  for (let c = lo; c <= hi; c++) {
+    const theirs = bondWords(secretHex, aPubHex, bPubHex, c, wordOpts).theirs
     matched = timingSafeStringEqual(theirs, spoken) || matched
   }
   return { ok: matched }

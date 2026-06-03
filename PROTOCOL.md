@@ -196,6 +196,15 @@ verifyBondWord(secret, myPub, theirPub, counter, spoken,
   the counterparty word at any counter in `[counter-t, counter+t]`, mirroring
   `signet-me`'s ±1 clock-skew window. kindred reproduces the words **via params** (it
   takes `counter` as an argument rather than deriving it from wall-clock).
+  **Fail-soft clamping (the `{ ok }` contract — `verifyBondWord` MUST NOT throw on a
+  valid-shaped call):** `t` is coerced to an integer in `[0, MAX_BOND_TOLERANCE]`
+  (= 10, matching spoken-token's `MAX_TOLERANCE`; a negative/NaN `t` → `0`, a larger one
+  → `10`), and the candidate counter window is clamped to the valid uint32 span
+  `[0, 0xFFFFFFFF]`. Without the latter, a boundary `counter` (e.g. `counter = 0,
+  tolerance = 1` → counter `-1`, or `counter = 0xFFFFFFFF, tolerance = 1` →
+  `0x100000000`) would feed `spoken-token`'s `counterBe32` an out-of-range counter and
+  throw a `RangeError`. The clamp skips only the out-of-range counters; the in-range
+  ones are still checked.
 
 The opts are **additive and backward-compatible**: every existing call with no `opts`
 keeps the original `'kindred:bond'` + exact-counter behaviour. **Both peers must either

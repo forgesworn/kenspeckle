@@ -211,6 +211,80 @@ describe('bondWords / verifyBondWord — signet-me compat opts', () => {
   })
 })
 
+// The tolerance window re-derives the counterparty word at every counter in [counter-t, counter+t].
+// A boundary counter (0 or 0xFFFFFFFF) plus a tolerance would push a candidate counter outside the
+// valid uint32 range, and spoken-token's `counterBe32` throws a RangeError on such a counter. Since
+// `verifyBondWord` returns `{ ok }` and MUST NOT throw on a valid-shaped call, the window (and the
+// tolerance itself) are clamped fail-soft. (R5 review hardening.)
+describe('verifyBondWord — tolerance window is clamped fail-soft (does not throw at boundaries)', () => {
+  it('counter:0 + tolerance:1 does NOT throw and still checks counters 0 and 1', () => {
+    // Without the [0, 0xFFFFFFFF] clamp this would probe counter -1 → counterBe32 RangeError.
+    const at0 = bondWords(SECRET, PUB_A, PUB_B, 0).theirs
+    const at1 = bondWords(SECRET, PUB_A, PUB_B, 1).theirs
+    expect(() => verifyBondWord(SECRET, PUB_A, PUB_B, 0, at0, { tolerance: 1 })).not.toThrow()
+    // counter 0 (the centre) matches:
+    expect(verifyBondWord(SECRET, PUB_A, PUB_B, 0, at0, { tolerance: 1 })).toEqual({ ok: true })
+    // counter 1 (the +1 edge, the only in-range neighbour) also matches → window 0 and 1 both checked:
+    expect(verifyBondWord(SECRET, PUB_A, PUB_B, 0, at1, { tolerance: 1 })).toEqual({ ok: true })
+    // a word from counter 2 (outside the clamped window [0,1]) is rejected:
+    const at2 = bondWords(SECRET, PUB_A, PUB_B, 2).theirs
+    expect(verifyBondWord(SECRET, PUB_A, PUB_B, 0, at2, { tolerance: 1 })).toEqual({ ok: false })
+  })
+
+  it('counter:0xFFFFFFFF + tolerance:1 does NOT throw and checks the top of the uint32 range', () => {
+    // Without the clamp this would probe counter 0x100000000 → counterBe32 RangeError.
+    const MAX = 0xffffffff
+    const atMax = bondWords(SECRET, PUB_A, PUB_B, MAX).theirs
+    const atPrev = bondWords(SECRET, PUB_A, PUB_B, MAX - 1).theirs
+    expect(() => verifyBondWord(SECRET, PUB_A, PUB_B, MAX, atMax, { tolerance: 1 })).not.toThrow()
+    expect(verifyBondWord(SECRET, PUB_A, PUB_B, MAX, atMax, { tolerance: 1 })).toEqual({ ok: true })
+    // the MAX-1 edge (the only in-range neighbour) matches → window MAX-1 and MAX both checked:
+    expect(verifyBondWord(SECRET, PUB_A, PUB_B, MAX, atPrev, { tolerance: 1 })).toEqual({ ok: true })
+  })
+
+  it('a huge tolerance is clamped to MAX_BOND_TOLERANCE (no unbounded loop, finishes fast)', () => {
+    // If the window were NOT clamped, a tolerance of 1e9 would attempt ~2e9 re-derivations and either
+    // hang or throw. Clamped to 10, this returns essentially instantly. We assert it returns promptly
+    // AND that words OUTSIDE the ±10 clamped window are rejected (proving the window did not widen).
+    const centre = 1_000_000
+    const start = Date.now()
+    const exact = bondWords(SECRET, PUB_A, PUB_B, centre).theirs
+    expect(verifyBondWord(SECRET, PUB_A, PUB_B, centre, exact, { tolerance: 1e9 })).toEqual({ ok: true })
+    // counter+10 is the edge of the clamped window → accepted; counter+11 is just outside → rejected.
+    const edge = bondWords(SECRET, PUB_A, PUB_B, centre + 10).theirs
+    const justOutside = bondWords(SECRET, PUB_A, PUB_B, centre + 11).theirs
+    expect(verifyBondWord(SECRET, PUB_A, PUB_B, centre, edge, { tolerance: 1e9 })).toEqual({ ok: true })
+    expect(verifyBondWord(SECRET, PUB_A, PUB_B, centre, justOutside, { tolerance: 1e9 })).toEqual({
+      ok: false,
+    })
+    // Sanity: the clamp keeps the whole thing well under a second (an unbounded loop would not).
+    expect(Date.now() - start).toBeLessThan(2000)
+  })
+
+  it('negative / NaN tolerance is treated as 0 (exact-counter match), never throws', () => {
+    const exact = bondWords(SECRET, PUB_A, PUB_B, 50).theirs
+    const neighbour = bondWords(SECRET, PUB_A, PUB_B, 51).theirs
+    for (const bad of [-1, -1000, NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(() => verifyBondWord(SECRET, PUB_A, PUB_B, 50, exact, { tolerance: bad })).not.toThrow()
+      // tolerance coerced to 0 → only the exact counter matches.
+      expect(verifyBondWord(SECRET, PUB_A, PUB_B, 50, exact, { tolerance: bad })).toEqual({ ok: true })
+      expect(verifyBondWord(SECRET, PUB_A, PUB_B, 50, neighbour, { tolerance: bad })).toEqual({
+        ok: false,
+      })
+    }
+  })
+
+  it('a fractional tolerance is truncated toward zero (1.9 → 1)', () => {
+    const prev = bondWords(SECRET, PUB_A, PUB_B, 99).theirs
+    const twoAway = bondWords(SECRET, PUB_A, PUB_B, 98).theirs
+    // 1.9 truncates to 1 → window [99,101] covers 99 but not 98.
+    expect(verifyBondWord(SECRET, PUB_A, PUB_B, 100, prev, { tolerance: 1.9 })).toEqual({ ok: true })
+    expect(verifyBondWord(SECRET, PUB_A, PUB_B, 100, twoAway, { tolerance: 1.9 })).toEqual({
+      ok: false,
+    })
+  })
+})
+
 describe('buildBondAttestation — kind-31000 via nostr-attestations', () => {
   it('returns a kind-31000 EventTemplate', () => {
     const tmpl = buildBondAttestation({ subjectPubHex: PUB_B })

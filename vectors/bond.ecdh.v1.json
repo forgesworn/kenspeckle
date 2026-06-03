@@ -1,0 +1,8 @@
+{
+  "description": "kindred bond ECDH migration golden vector for @forgesworn/kindred. THE byte-exact cross-implementation contract: deriveBondSecret(myPriv, theirXOnlyPub) = SHA-256(x-coordinate of theirPub*myPriv), byte-for-byte identical to signet-protocol. A future Rust/WASM port and the signet-app migration both MUST reproduce `secret` exactly from these inputs (in BOTH directions — only the shared x-coordinate is hashed, so each seat lands on the same secret regardless of which y-parity it lifts). privA=11*32, privB=22*32; pubAXOnly/pubBXOnly are the x-only (BIP-340) pubkeys of privA/privB. Drift here breaks every migrated contact's verification words.",
+  "privA": "1111111111111111111111111111111111111111111111111111111111111111",
+  "privB": "2222222222222222222222222222222222222222222222222222222222222222",
+  "pubAXOnly": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+  "pubBXOnly": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+  "secret": "fd264454c8f37c9c4b000f0672399b9c76011de71f489fd8a043e25e558226f9"
+}
