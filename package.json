@@ -13,7 +13,7 @@
     "./discovery":  { "types": "./dist/discovery.d.ts", "default": "./dist/discovery.js" },
     "./invite":     { "types": "./dist/invite.d.ts",    "default": "./dist/invite.js" }
   },
-  "files": ["dist", "LICENSE", "llms.txt"],
+  "files": ["dist", "LICENSE", "llms.txt", "README.md", "PROTOCOL.md", "SECURITY.md"],
   "scripts": { "build": "tsc", "test": "vitest run", "test:watch": "vitest", "typecheck": "tsc --noEmit", "prepublishOnly": "npm run build" },
   "keywords": ["nostr", "relationships", "verification", "ecdh", "spoken-token", "kith", "kin", "ken", "presence"],
   "author": "forgesworn",
