@@ -67,7 +67,7 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@forgesworn/tessera-kit": "^0.1.0",
+    "@forgesworn/tessera-kit": "git+https://github.com/forgesworn/tessera-kit.git#175ca6dad33666418716bf307784552a3eb0534d",
     "@noble/ciphers": "^2.0.0",
     "@noble/curves": "^2.0.1",
     "@noble/hashes": "^2.0.1",
