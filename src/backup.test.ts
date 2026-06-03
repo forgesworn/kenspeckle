@@ -123,4 +123,29 @@ describe('exportEntriesEncrypted / importEntries', () => {
     // empty array is valid → returns []
     expect(importEntries(objBlob, key)).toEqual([])
   })
+
+  it('LOWERCASES uppercase hex (pubkey/ownerPubkey/sharedSecret/groupId) on import', () => {
+    // A backup file edited/restored with UPPERCASE hex must be normalized — uppercase hex would
+    // break strict-equality against nostr-tools' always-lowercase event.pubkey downstream.
+    const upper: KindredEntry[] = [
+      {
+        ...kith,
+        pubkey: B.toUpperCase(),
+        ownerPubkey: OWNER.toUpperCase(),
+        sharedSecret: '11'.repeat(32).toUpperCase(),
+        annotations: { groupId: 'ABCDEF', label: 'gym buddy' },
+      } as KithEntry,
+    ]
+    const blob = exportEntriesEncrypted(upper, key)
+    const restored = importEntries(blob, key)
+    expect(restored[0]!.pubkey).toBe(B) // lowercase
+    expect(restored[0]!.ownerPubkey).toBe(OWNER)
+    if (restored[0]!.tier === 'kith') {
+      expect(restored[0]!.sharedSecret).toBe('11'.repeat(32))
+    }
+    // annotations.groupId is also a hex-shaped routing id (linkForRecall emits hex) → lowercased.
+    expect(restored[0]!.annotations?.groupId).toBe('abcdef')
+    // non-hex annotation fields are untouched.
+    expect(restored[0]!.annotations?.label).toBe('gym buddy')
+  })
 })

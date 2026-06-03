@@ -98,6 +98,16 @@ These two functions answer **different** questions:
   signature can **never** satisfy it. **Impersonation resistance requires
   `verifyKeyControl` against a fresh nonce — not `attributeSignature`.**
 
+  What makes "**never**" literally true is a **nonce-strength gate**: `verifyKeyControl`
+  requires the challenge nonce to be exactly the **64 lowercase-hex** shape
+  `buildKeyControlChallenge` emits (32 random bytes), rejecting anything else with
+  `reason:'bad-nonce'` — checked **early**, right after `revoked`, before the
+  `content === nonce` comparison is ever trusted. Without it, a weak/empty nonce
+  (`''`) would be satisfied by a **replayed, genuinely-signed empty-content event**
+  (kind-3 contact lists, reactions — common on Nostr), since `content === nonce`
+  reduces to `'' === ''`. The gate closes that replay hole; the caller cannot
+  weaken the challenge to reopen it.
+
 Both fail closed on `revoked` (checked first) and on a `previousPubkeys` (rotated-away)
 key. Use attribution to credit an artifact; use key-control to authenticate a live
 party.

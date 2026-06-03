@@ -4,17 +4,25 @@
 // Spec: signet-plans/docs/plans/2026-06-02-kindred-primitive-spec.md §8 (discovery) + §11 (opt-out).
 // Publication shape matches tessera-kit PROTOCOL.md §6 byte-for-byte (kind 30444, d-tag
 // `kindred:members:<namespace>:<serverId>`, indexable `['n', namespace]` tag, base64-of-KFLT-blob
-// content). The Nostr event signature (NIP-01) and the in-blob Schnorr provenance signature (§4) are
-// DISTINCT; `parseFilterPublication` verifies BOTH before returning anything trustable.
+// content). The `namespace` is reverse-DNS-style and MUST be colon-free (the d-tag splits on the
+// first colon after the prefix to recover `<namespace>` vs `<serverId>`); `serverId` MAY contain
+// colons (it is the remainder). The Nostr event signature (NIP-01) and the in-blob Schnorr provenance
+// signature (§4) are DISTINCT; `parseFilterPublication` verifies BOTH before returning anything
+// trustable. The base64 publication mechanics are delegated to tessera-kit's generic `./nostr`
+// builder/decoder so the wire-format lives in ONE place (kindred supplies only its kind + tags).
 //
 // This layer holds no state, opens no sockets, and never enumerates a server's membership — it only
 // tests the consumer's OWN contacts against a published filter (presence, not a member list).
 
 import { parseFilter, testMembership, memberKey, verifyFilterBlob, type MembershipFilter } from '@forgesworn/tessera-kit'
+// Publication MECHANICS (base64 assembly + length-capped decode) are delegated to tessera-kit's
+// relationship-agnostic `./nostr` core, so the wire-format lives in ONE place. kindred still owns the
+// kind + d/n/epoch/keyed tags and passes them in. Aliased to avoid clashing with kindred's own
+// `buildFilterPublication` (the kindred-specific wrapper exported from this module).
+import { buildFilterPublication as buildPublicationTemplate, decodeFilterPublicationContent } from '@forgesworn/tessera-kit/nostr'
 import { verifyEvent } from 'nostr-tools/pure'
 import { schnorr } from '@noble/curves/secp256k1.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
-import { base64 } from '@scure/base'
 import type { KindredEntry, EventTemplate, NostrEvent, NostrFilter } from './types.js'
 
 // `parseFilter` is re-exported only so callers can `import { parseFilter } from 'kindred/discovery'`
@@ -36,6 +44,11 @@ const HEX64 = /^[0-9a-f]{64}$/
  *  publication can be rejected BEFORE base64-decoding an oversized payload into memory. */
 const MAX_BLOB_BYTES = 64 * 1024 * 1024
 
+/** Current unix time in whole seconds (the kindred event `created_at` convention). */
+function nowSec(): number {
+  return Math.floor(Date.now() / 1000)
+}
+
 /**
  * Local presence intersection (spec §4 persona-scoping + §8.1).
  *
@@ -47,6 +60,11 @@ const MAX_BLOB_BYTES = 64 * 1024 * 1024
  * `ownerPubkey` (case-insensitive). Mixing entries scoped to different personas into one discovery
  * call would let a server correlate two of the caller's personas via a single presence query, so a
  * mixed-persona input is a bug and is REJECTED (throws) rather than silently filtered.
+ *
+ * KEYED-WITHOUT-SALT GUARD: a keyed filter tests `sha256(salt||pubkey)`, so calling it with no salt
+ * would test the OPEN-form `memberKey` and silently return `[]` ("nobody you know is here"). The
+ * filter KNOWS it is keyed (`f.keyed`), so that wrong-but-quiet answer is a doxxing-adjacent footgun
+ * (the caller may act on a false "no friends present"). It THROWS instead, demanding the salt.
  *
  * NO local truncation: every matching entry is returned (`KindredEntry[]` per spec §8.1). The
  * `{truncated}` flag the spec mentions elsewhere is an aggregator concern (deferred §8.4), not this
@@ -63,6 +81,10 @@ export function discoverPresent(
     if (e.ownerPubkey.toLowerCase() !== owner) {
       throw new Error('discoverPresent: mixed-persona input — all entries must share ownerPubkey')
     }
+  }
+  // Fail loud, not silent: a keyed filter without its salt can only produce a misleading empty result.
+  if (f.keyed && saltHex === undefined) {
+    throw new Error('discoverPresent: filter is keyed but no salt was provided — pass the keyed-pool salt')
   }
   return entries.filter((e) => testMembership(f, memberKey(e.pubkey, saltHex)))
 }
@@ -103,8 +125,17 @@ export function disclosureFor(opts: { salt?: string }): DiscoveryDisclosure {
  * emit an identical event.
  *
  * - d-tag `kindred:members:<namespace>:<serverId>` is the addressable identity (one filter per
- *   `(namespace, serverId)`; a newer epoch replaces the older addressable event).
+ *   `(namespace, serverId)`; a newer epoch replaces the older addressable event). `namespace` is
+ *   reverse-DNS-style and MUST be **colon-free** — a colon would shift the `<namespace>:<serverId>`
+ *   boundary `parseFilterPublication` splits on (the first colon after the prefix), mis-parsing the
+ *   two fields. (serverId MAY contain colons — it is the unambiguous remainder, e.g. a
+ *   `wss://host:port/path` URL.) tessera-kit's capability already guards its own serverId this way;
+ *   this mirrors it for kindred's namespace.
  * - `['n', namespace]` is the single-letter relay-indexable tag the aggregator queries (`#n`).
+ *
+ * The base64-of-blob CONTENT and `EventTemplate` assembly are delegated to tessera-kit's generic
+ * `./nostr` publisher (`buildPublicationTemplate`) so the wire mechanics live in ONE place; kindred
+ * supplies only its kind + tags. Output is byte-identical to the previous hand-rolled form.
  */
 export function buildFilterPublication(p: {
   namespace: string
@@ -113,7 +144,11 @@ export function buildFilterPublication(p: {
   keyed: boolean
   epoch: number
 }): EventTemplate {
-  return {
+  // d-tag misparse guard: a colon in the namespace would corrupt the addressable identity boundary.
+  if (p.namespace.includes(':')) {
+    throw new Error('buildFilterPublication: namespace must not contain a colon')
+  }
+  return buildPublicationTemplate({
     kind: KINDRED_FILTER_KIND,
     tags: [
       ['d', `${D_TAG_PREFIX}${p.namespace}:${p.serverId}`],
@@ -121,9 +156,9 @@ export function buildFilterPublication(p: {
       ['epoch', String(p.epoch)],
       ['keyed', p.keyed ? '1' : '0'],
     ],
-    content: base64.encode(p.blob),
-    created_at: Math.floor(Date.now() / 1000),
-  }
+    blob: p.blob,
+    createdAt: nowSec(),
+  })
 }
 
 /** Parsed, trust-checked filter publication. `signerPubkeyHex` is the IN-BLOB Schnorr signer (the
@@ -160,17 +195,18 @@ export function parseFilterPublication(
   // 2. Correct kind.
   if (event.kind !== KINDRED_FILTER_KIND) return null
 
-  // 3. Decode the blob from base64 content. Cap the encoded length before decoding so an oversized
-  //    payload can't be expanded into memory (base64 expands ~4/3, so cap the encoded form too).
+  // 3. Decode the blob from base64 content, delegated to tessera-kit's `./nostr` helper. It caps the
+  //    ENCODED length BEFORE decoding (so an oversized payload can't be expanded into memory),
+  //    decodes, and re-asserts the decoded length — throwing on a non-string, an over-length, or
+  //    malformed base64. We catch → null to keep this function's never-throws contract. Identical
+  //    over-length-before-allocation behaviour to the previous hand-rolled cap.
   if (typeof event.content !== 'string') return null
-  if (event.content.length > Math.ceil((MAX_BLOB_BYTES * 4) / 3) + 4) return null
   let blob: Uint8Array
   try {
-    blob = base64.decode(event.content)
+    blob = decodeFilterPublicationContent(event.content, MAX_BLOB_BYTES)
   } catch {
     return null
   }
-  if (blob.length > MAX_BLOB_BYTES) return null
 
   // 4. In-blob Schnorr provenance signature (§10 invariant: consumers verify the in-blob sig).
   const sigCheck = verifyFilterBlob(blob)

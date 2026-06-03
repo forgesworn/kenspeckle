@@ -210,10 +210,17 @@ works — only `content` + sig + pubkey are inspected).
 
 - **`buildKeyControlChallenge()`** → `{ nonce: 64-hex (32 random bytes), createdAt }`.
 - **`verifyKeyControl(entry, nonce, signedEvent)`** — fail-closed, in order:
-  `revoked` → `pubkey === current pin` (a `previousPubkeys` key is rejected) →
-  `content === nonce` → `verifyEvent` (sig + id). Because the nonce is freshly
-  random per challenge, a replayed old signature can **never** satisfy this — this
-  is what makes recognition impersonation-resistant **live**.
+  `revoked` → **nonce strength** (`nonce` MUST match `/^[0-9a-f]{64}$/`, else
+  `reason:'bad-nonce'`) → `pubkey === current pin` (a `previousPubkeys` key is
+  rejected) → `content === nonce` → `verifyEvent` (sig + id). Because the nonce is
+  freshly random per challenge, a replayed old signature can **never** satisfy this
+  — this is what makes recognition impersonation-resistant **live**. The
+  nonce-strength gate is **load-bearing** for that "never": without it an empty
+  nonce (`''`) would be satisfied by a replayed, genuinely-signed **empty-content**
+  event (kind-3 lists, reactions), because `content === nonce` collapses to
+  `'' === ''`. Checking the nonce shape **before** trusting that comparison is what
+  closes the hole — and the gate is deliberately case-sensitive (only the lowercase
+  shape we emit is accepted).
 - **`attributeSignature(entry, event)`** — "did the current pin sign this
   artifact?" Fail-closed: `revoked` → pubkey ∈ `previousPubkeys` (`rotated-away-key`)
   → `event.pubkey === current pin` → `verifyEvent`. This is **REPLAYABLE by

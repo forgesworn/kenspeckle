@@ -156,9 +156,10 @@ describe('discoverPresent — local intersection over a tessera-kit filter', () 
     const present = discoverPresent(filter, entries, owner, SALT)
     expect(present.map((e) => e.pubkey).sort()).toEqual([a, b].sort())
 
-    // Without the salt, NONE match (keyed values differ from open values).
-    const presentNoSalt = discoverPresent(filter, entries, owner)
-    expect(presentNoSalt).toEqual([])
+    // Without the salt, the filter KNOWS it's keyed — silently testing the open-form memberKey would
+    // return [] ("no friends here"), a doxxing-adjacent footgun (a wrong "nobody you know is here"
+    // answer). It must THROW instead, telling the caller to pass the keyed-pool salt.
+    expect(() => discoverPresent(filter, entries, owner)).toThrow(/keyed but no salt/i)
   })
 
   it('THROWS on mixed-persona input (entries with differing ownerPubkey) — anti-correlation', () => {
@@ -285,6 +286,20 @@ describe('filter publication — build → sign → parse round-trip', () => {
     expect(keyedTag).toEqual(['keyed', '1'])
     expect(epochTag).toEqual(['epoch', '5'])
     expect(template.content).toBe(base64.encode(blob))
+  })
+
+  it('REJECTS a namespace containing a colon (d-tag misparse guard); reverse-DNS is fine', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 1, SALT)
+    // A namespace with a colon would shift the `kindred:members:<ns>:<serverId>` boundary that
+    // parseFilterPublication splits on (first colon after the prefix) → mis-parse. Reject at build.
+    expect(() =>
+      buildFilterPublication({ namespace: 'com:evil', serverId: SERVER_ID, blob, keyed: true, epoch: 1 }),
+    ).toThrow(/namespace must not contain a colon/i)
+    // A normal reverse-DNS namespace (colon-free) builds fine.
+    expect(() =>
+      buildFilterPublication({ namespace: 'com.example.game', serverId: SERVER_ID, blob, keyed: true, epoch: 1 }),
+    ).not.toThrow()
   })
 
   it('round-trips keyed:true and a serverId containing colons (split on the prefix only)', () => {

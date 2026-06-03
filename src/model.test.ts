@@ -347,4 +347,50 @@ describe('parseEntry', () => {
     expect(() => parseEntry('42')).toThrow()
     expect(() => parseEntry('not json{')).toThrow()
   })
+
+  it('LOWERCASES uppercase hex on parse (uppercase from a restored backup must not break equality)', () => {
+    // A restored/imported backup can carry UPPERCASE hex. nostr-tools always emits lowercase
+    // `event.pubkey`, so an uppercase `entry.pubkey` would silently fail strict-equality in
+    // verifyKeyControl / attributeSignature. parseEntry must normalize to lowercase.
+    const upperKin = {
+      ...toWire(kin),
+      pubkey: A.toUpperCase(),
+      ownerPubkey: OWNER.toUpperCase(),
+      sharedSecret: '00'.repeat(32).toUpperCase(),
+    }
+    const parsed = parseEntry(JSON.stringify(upperKin))
+    expect(parsed.pubkey).toBe(A) // lowercase
+    expect(parsed.ownerPubkey).toBe(OWNER)
+    if (parsed.tier === 'kin') {
+      expect(parsed.sharedSecret).toBe('00'.repeat(32))
+    } else {
+      throw new Error('expected kin tier')
+    }
+  })
+
+  it('LOWERCASES uppercase ken rotation.newPubkey, previousPubkeys, and provenance fields on parse', () => {
+    const old1 = 'a1'.repeat(32)
+    const rotated = 'b2'.repeat(32)
+    const upperKen = {
+      ...toWire(ken),
+      pubkey: C.toUpperCase(),
+      ownerPubkey: OWNER.toUpperCase(),
+      previousPubkeys: [old1.toUpperCase()],
+      rotation: {
+        newPubkey: rotated.toUpperCase(),
+        observedAt: 5,
+        via: 'nip05',
+        accepted: false,
+      },
+    }
+    const parsed = parseEntry(JSON.stringify(upperKen))
+    expect(parsed.pubkey).toBe(C)
+    expect(parsed.ownerPubkey).toBe(OWNER)
+    if (parsed.tier === 'ken') {
+      expect(parsed.previousPubkeys).toEqual([old1]) // lowercased element
+      expect(parsed.rotation!.newPubkey).toBe(rotated) // lowercased
+    } else {
+      throw new Error('expected ken tier')
+    }
+  })
 })

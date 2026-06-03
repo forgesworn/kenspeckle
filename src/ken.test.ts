@@ -218,6 +218,42 @@ describe('verifyKeyControl — proves LIVE key control (replay-resistant)', () =
     const r = verifyKeyControl(entry, nonce, tampered)
     expect(r).toEqual({ proven: false, reason: 'bad-signature' })
   })
+
+  it('bad-nonce for an EMPTY nonce + a replayed empty-content event (the replay hole)', () => {
+    // The attack: empty-content events are common on Nostr (kind-3 contact lists, reactions). With a
+    // weak/empty challenge nonce, a replayed GENUINE empty-content event signed by the pinned key
+    // would satisfy `content === nonce` (`'' === ''`) and `verifyEvent` — falsely proving LIVE
+    // control from a stale signature. The nonce-strength gate must reject the empty nonce FIRST so
+    // the "a replayed old signature can never satisfy it" claim is actually true.
+    const { sk, pk } = freshKeypair()
+    const entry = pinManual(pk)
+    const replayed = signEvent(sk, '') // a real, genuinely-signed empty-content event
+    expect(verifyKeyControl(entry, '', replayed)).toEqual({ proven: false, reason: 'bad-nonce' })
+  })
+
+  it('bad-nonce for a short / non-hex nonce (must be the 64-hex buildKeyControlChallenge shape)', () => {
+    const { sk, pk } = freshKeypair()
+    const entry = pinManual(pk)
+    // Too short (the claimant even signs it correctly) → still bad-nonce, fail-closed.
+    const shortNonce = 'abc123'
+    const evShort = signEvent(sk, shortNonce)
+    expect(verifyKeyControl(entry, shortNonce, evShort)).toEqual({ proven: false, reason: 'bad-nonce' })
+    // Right length but non-hex characters → bad-nonce.
+    const nonHexNonce = 'g'.repeat(64)
+    const evNonHex = signEvent(sk, nonHexNonce)
+    expect(verifyKeyControl(entry, nonHexNonce, evNonHex)).toEqual({ proven: false, reason: 'bad-nonce' })
+    // Uppercase hex is NOT the lowercase shape buildKeyControlChallenge emits → bad-nonce.
+    const upperNonce = 'A'.repeat(64)
+    const evUpper = signEvent(sk, upperNonce)
+    expect(verifyKeyControl(entry, upperNonce, evUpper)).toEqual({ proven: false, reason: 'bad-nonce' })
+  })
+
+  it('bad-nonce is checked AFTER revoked (a dead pin still reports revoked first)', () => {
+    const { sk, pk } = freshKeypair()
+    const entry = pinManual(pk, { revoked: true })
+    const replayed = signEvent(sk, '')
+    expect(verifyKeyControl(entry, '', replayed)).toEqual({ proven: false, reason: 'revoked' })
+  })
 })
 
 // --- attributeSignature (possibly-OLD artifact; current-pin only) ---------------------------------

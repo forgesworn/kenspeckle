@@ -7,7 +7,10 @@
 //   1. PIN it (with provenance: how you came to trust this key) — `pinKen` / `pinKenFromNip05`.
 //   2. Prove LIVE control of it — `buildKeyControlChallenge` + `verifyKeyControl`. This is the
 //      impersonation-resistance primitive: a FRESH random nonce the claimant must sign means a
-//      replayed old signature can never satisfy it.
+//      replayed old signature can never satisfy it. `verifyKeyControl` ENFORCES that the nonce is the
+//      full 64-hex random shape `buildKeyControlChallenge` emits (rejecting `''`/weak nonces with
+//      `reason:'bad-nonce'`) — without that gate an empty nonce would be satisfied by a replayed
+//      empty-content event, so the strength check is what makes the "never" claim true.
 //   3. ATTRIBUTE a (possibly old) signed artifact to the pin — `attributeSignature`. This binds an
 //      artifact to the CURRENT pin only and is — by construction — REPLAYABLE (anyone can re-present
 //      a genuinely-signed old event). That replayability is exactly WHY `verifyKeyControl` exists:
@@ -39,6 +42,13 @@ import type { NostrEvent, KenEntry, KenProvenance, KenRotation } from './types.j
 
 /** Exactly 64 hex chars (case-insensitive; callers lowercase on the way out). */
 const HEX64 = /^[0-9a-f]{64}$/i
+
+/** Exactly 64 LOWERCASE hex chars — the EXACT shape `buildKeyControlChallenge` emits (32 random
+ *  bytes via `bytesToHex`, which is lowercase). `verifyKeyControl` requires the challenge nonce to
+ *  match this so a weak/empty nonce (e.g. `''`) cannot be satisfied by a replayed empty-content
+ *  event. Deliberately case-SENSITIVE (no `i` flag): nothing we issue is uppercase, so accepting
+ *  uppercase would only widen the surface for no benefit. */
+const CHALLENGE_NONCE = /^[0-9a-f]{64}$/
 
 /** Basic NIP-05 `local@domain` shape. Deliberately permissive on the allowed characters (NIP-05
  *  itself only constrains the local part to `[a-z0-9-_.]` case-insensitively); the load-bearing
@@ -163,10 +173,13 @@ export async function pinKenFromNip05(
 }
 
 /**
- * Build a fresh key-control challenge: a 32-byte random nonce (hex) plus the issue time.
+ * Build a fresh key-control challenge: a 32-byte random nonce (lowercase hex) plus the issue time.
  *
  * Freshness is the whole point — the nonce is the replay defence. The claimant proves LIVE control
- * by signing an event whose `content` is exactly this nonce (see `verifyKeyControl`).
+ * by signing an event whose `content` is exactly this nonce (see `verifyKeyControl`). The 64-hex
+ * shape this emits is ALSO the shape `verifyKeyControl` enforces (`reason:'bad-nonce'` otherwise),
+ * so a caller cannot accidentally weaken the challenge to an empty/short string and reopen the
+ * replay hole.
  *
  * @returns `{ nonce: 64-hex (32 random bytes), createdAt: unix seconds }`.
  */
@@ -185,11 +198,18 @@ export function buildKeyControlChallenge(): { nonce: string; createdAt: number }
  *
  * Checks, in this exact order (each short-circuits, fail-closed):
  *   1. `revoked`                  → `{ proven:false, reason:'revoked' }` (a dead pin proves nothing).
- *   2. pubkey is the CURRENT pin  → else `'pubkey-not-current-pin'` (a `previousPubkeys` key is NOT
+ *   2. nonce STRENGTH             → else `'bad-nonce'`. The challenge nonce MUST be exactly 64
+ *                                   lowercase-hex chars (the 32 random bytes `buildKeyControlChallenge`
+ *                                   emits). This is the load-bearing replay defence: WITHOUT it, a
+ *                                   weak/empty nonce (e.g. `''`) is satisfied by a replayed GENUINE
+ *                                   empty-content event (kind-3 lists, reactions — common on Nostr),
+ *                                   because `content === nonce` reduces to `'' === ''`. The guard is
+ *                                   what makes "a replayed old signature can never satisfy this" TRUE.
+ *   3. pubkey is the CURRENT pin  → else `'pubkey-not-current-pin'` (a `previousPubkeys` key is NOT
  *                                   accepted — live control must be of the key in force NOW).
- *   3. `content === nonce`        → else `'nonce-mismatch'` (binds the proof to THIS challenge).
- *   4. `verifyEvent` (sig + id)   → else `'bad-signature'`.
- *   5. otherwise                  → `{ proven:true }`.
+ *   4. `content === nonce`        → else `'nonce-mismatch'` (binds the proof to THIS challenge).
+ *   5. `verifyEvent` (sig + id)   → else `'bad-signature'`.
+ *   6. otherwise                  → `{ proven:true }`.
  */
 export function verifyKeyControl(
   entry: KenEntry,
@@ -197,6 +217,12 @@ export function verifyKeyControl(
   signedEvent: NostrEvent,
 ): { proven: boolean; reason?: string } {
   if (entry.revoked) return { proven: false, reason: 'revoked' }
+  // Nonce-strength gate (fail-closed, checked EARLY): a challenge that is not the full 64-hex random
+  // shape is rejected before we ever trust `content === nonce`. This closes the empty/weak-nonce
+  // replay hole and is what makes the impersonation-resistance claim honest.
+  if (typeof nonce !== 'string' || !CHALLENGE_NONCE.test(nonce)) {
+    return { proven: false, reason: 'bad-nonce' }
+  }
   if (signedEvent.pubkey !== entry.pubkey) return { proven: false, reason: 'pubkey-not-current-pin' }
   if (signedEvent.content !== nonce) return { proven: false, reason: 'nonce-mismatch' }
   if (!verifyEvent(signedEvent)) return { proven: false, reason: 'bad-signature' }

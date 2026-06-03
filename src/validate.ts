@@ -44,7 +44,10 @@ function reqHex64(o: Record<string, unknown>, field: string): string {
   if (typeof v !== 'string' || !HEX64.test(v)) {
     throw new Error(`kindred entry: ${field} must be 64 hex chars`)
   }
-  return v
+  // Lowercase-normalize on parse. A restored/imported backup can carry UPPERCASE hex; nostr-tools
+  // always emits lowercase `event.pubkey`, so an uppercase `pubkey`/`ownerPubkey`/`sharedSecret`
+  // would silently break strict-equality in verifyKeyControl / attributeSignature downstream.
+  return v.toLowerCase()
 }
 
 function reqFiniteNumber(o: Record<string, unknown>, field: string): number {
@@ -92,7 +95,8 @@ function validateRotation(v: unknown): KenRotation {
     throw new Error('kindred ken: rotation.accepted must be a boolean')
   }
   const out: KenRotation = {
-    newPubkey: v.newPubkey,
+    // Lowercase-normalize (same reason as reqHex64: must strict-equal nostr-tools' lowercase pubkey).
+    newPubkey: v.newPubkey.toLowerCase(),
     observedAt: v.observedAt,
     via: v.via as KenRotation['via'],
     accepted: v.accepted,
@@ -111,7 +115,9 @@ function validateAnnotations(v: unknown): PrivateAnnotations {
   const out: PrivateAnnotations = {}
   if (v.groupId !== undefined) {
     if (typeof v.groupId !== 'string') throw new Error('kindred entry: annotations.groupId must be a string')
-    out.groupId = v.groupId
+    // groupId is a hex-shaped recall id (`linkForRecall` emits `bytesToHex(randomBytes(8))`);
+    // lowercase-normalize so a restored uppercase value still groups/compares correctly.
+    out.groupId = v.groupId.toLowerCase()
   }
   if (v.label !== undefined) {
     if (typeof v.label !== 'string') throw new Error('kindred entry: annotations.label must be a string')
@@ -214,7 +220,8 @@ export function validateEntryShape(raw: unknown, allowAnnotations: boolean): Kin
     if (!Array.isArray(raw.previousPubkeys) || !raw.previousPubkeys.every((p) => typeof p === 'string' && HEX64.test(p))) {
       throw new Error('kindred ken: previousPubkeys must be an array of 64-hex strings')
     }
-    entry.previousPubkeys = raw.previousPubkeys as string[]
+    // Lowercase each element (same equality-safety reason as reqHex64).
+    entry.previousPubkeys = (raw.previousPubkeys as string[]).map((p) => p.toLowerCase())
   }
   if (raw.rotation !== undefined) entry.rotation = validateRotation(raw.rotation)
   if (raw.revoked !== undefined) {
