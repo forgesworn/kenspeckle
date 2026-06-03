@@ -18,6 +18,12 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
+      # @forgesworn/tessera-kit is a private git+https dependency. Rewrite
+      # github.com HTTPS clones to inject a read-only PAT so `npm ci` can
+      # resolve it. Requires repo secret FORGESWORN_READ_PAT (fine-grained
+      # PAT with read access to forgesworn/tessera-kit).
+      - name: Authenticate git for private @forgesworn deps
+        run: git config --global url."https://x-access-token:${{ secrets.FORGESWORN_READ_PAT }}@github.com/".insteadOf "https://github.com/"
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
