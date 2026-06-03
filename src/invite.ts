@@ -11,7 +11,7 @@
 //
 //   (2) verifyBondAttestation — the single-attestation anti-sybil BRICK (§9.2). Verifies ONE real
 //       `kindred-bond` attestation (the kind-31000 event K-4's `buildBondAttestation` builds + the
-//       caller finalizes) and returns `{ attesterPubHex, subjectPubHex }`. Collective/guild
+//       caller finalizes) and returns `{ ok, attesterPubHex, subjectPubHex }`. Collective/guild
 //       sybil-resistance — counting a member's attestations into a set of DISTINCT verified humans —
 //       lives in the CONSUMING APP. Kindred provides the brick + per-attestation verification, but
 //       NO graph traversal, NO counting (that would breach the §2 non-goals).
@@ -253,28 +253,28 @@ export function parseJoinInvite(blob: Uint8Array, now?: number): JoinInvite {
  *   caches `verifyEvent` in an enumerable `verifiedSymbol` on `finalizeEvent` output; a caller that
  *   passes such an object directly would have `verifyEvent` short-circuit on the stale cache. Pass a
  *   wire-clone (`JSON.parse(JSON.stringify(ev))`) if the event might carry that symbol.
- * @returns `{ valid:true, attesterPubHex, subjectPubHex }` on success; `{ valid:false }` otherwise.
+ * @returns `{ ok:true, attesterPubHex, subjectPubHex }` on success; `{ ok:false }` otherwise.
  */
 export function verifyBondAttestation(event: NostrEvent): {
-  valid: boolean
+  ok: boolean
   attesterPubHex?: string
   subjectPubHex?: string
 } {
   // (a) Real signature + event-id check. (For finalizeEvent output, the caller should wire-clone to
   //     drop the verifiedSymbol cache; otherwise verifyEvent may short-circuit on a stale `true`.)
-  if (!verifyEvent(event)) return { valid: false }
+  if (!verifyEvent(event)) return { ok: false }
 
   // (b) Must be the kindred-bond addressable attestation kind.
-  if (event.kind !== 31000) return { valid: false }
+  if (event.kind !== 31000) return { ok: false }
 
   // (c) The kindred-bond discriminator tag (the EXACT shape nostr-attestations emits — verified
   //     against the real buildBondAttestation output, not guessed).
   const typeTag = event.tags.find((t) => t[0] === 'type' && t[1] === 'kindred-bond')
-  if (!typeTag) return { valid: false }
+  if (!typeTag) return { ok: false }
 
   // (d) The subject p-tag (the pubkey the attester is asserting a bond with). Must be 64-hex.
   const pTag = event.tags.find((t) => t[0] === 'p' && typeof t[1] === 'string' && HEX64.test(t[1]))
-  if (!pTag || typeof pTag[1] !== 'string') return { valid: false }
+  if (!pTag || typeof pTag[1] !== 'string') return { ok: false }
 
-  return { valid: true, attesterPubHex: event.pubkey, subjectPubHex: pTag[1] }
+  return { ok: true, attesterPubHex: event.pubkey, subjectPubHex: pTag[1] }
 }

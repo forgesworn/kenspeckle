@@ -81,9 +81,16 @@ const { mine } = bondWords(secret, myPubHex, theirs.pubkey, counter)
 speakAloud(mine)
 
 // (4) Verify what THEY spoke (constant-time compare under the hood).
-const ok = verifyBondWord(secret, myPubHex, theirs.pubkey, counter, whatTheySaid)
-if (ok.status === 'valid') { /* bonded — persist a KithEntry, encrypt sharedSecret at rest */ }
+const result = verifyBondWord(secret, myPubHex, theirs.pubkey, counter, whatTheySaid)
+if (result.ok) { /* bonded — persist a KithEntry, encrypt sharedSecret at rest */ }
 ```
+
+> **Migrating from signet-app's `signet-me`?** By DEFAULT `bondWords` uses namespace `'kindred:bond'`
+> + sorted roles, so its words **differ** from `signet-me`'s — a naive migration changes the words.
+> To cross-verify with a peer who hasn't migrated yet, reproduce `signet-me`'s words by passing
+> `bondWords(secret, myPub, theirPub, counter, { namespace: 'signet:me', roleOrder: 'caller' })` and
+> `verifyBondWord(…, { namespace: 'signet:me', roleOrder: 'caller', tolerance: 1 })` (each seat passes
+> its OWN pubkey first). Both peers must either upgrade together or pass these signet-me opts.
 
 ### ken — pin a public figure, then prove LIVE control
 
@@ -101,7 +108,7 @@ const entry = await pinKenFromNip05('mrbeast@example.com', myGamingPersonaPubHex
 const { nonce } = buildKeyControlChallenge()
 const signed = await askClaimantToSign(nonce) // their client builds + signs it
 const proof = verifyKeyControl(entry, nonce, signed)
-if (proof.proven) { /* the account in front of me holds the pinned key, live (no replay) */ }
+if (proof.ok) { /* the account in front of me holds the pinned key, live (no replay) */ }
 ```
 
 ### discovery — "which of my contacts are here?" (locally)
@@ -154,10 +161,16 @@ all fields validated, `displayName` returned **verbatim**). Type `HandshakePaylo
 ### `./bond`
 
 `deriveBondSecret(myPrivHex, theirPubHex)` (byte-exact ECDH); `bondWords(secret,
-aPub, bPub, counter)` → `{ mine, theirs }`; `verifyBondWord(…, spoken)`;
-`buildBondAttestation({ subjectPubHex, summary? })` → kind-31000 `EventTemplate`
-(`type:'kindred-bond'`); `retractBondAssertion(assertion)` → kind-5. Const
-`KINDRED_BOND_NAMESPACE`.
+aPub, bPub, counter, opts?)` → `{ mine, theirs }`; `verifyBondWord(…, spoken, opts?)`
+→ `{ ok }`; `buildBondAttestation({ subjectPubHex, summary? })` → kind-31000
+`EventTemplate` (`type:'kindred-bond'`); `retractBondAssertion(assertion)` → kind-5.
+Const `KINDRED_BOND_NAMESPACE`. The optional `opts`
+(`{ namespace?, roleOrder?: 'sorted'|'caller' }`, plus `tolerance?` on `verifyBondWord`)
+exist for **signet-me migration compatibility** — `{ namespace: 'signet:me',
+roleOrder: 'caller', tolerance: N }` reproduces signet-app's `signet-me` words so a
+migrated contact can cross-verify with an un-migrated peer; defaults
+(`'kindred:bond'` + `'sorted'` + `tolerance 0`) keep the existing behaviour but
+**differ** from signet-me's words.
 
 ### `./ken`
 
@@ -180,7 +193,7 @@ memberPrivHex)`. Re-exports `parseFilter` from `@forgesworn/tessera-kit`. Consts
 
 `buildJoinInvite(p, inviterPrivHex)` → `JoinInvite` **object**;
 `parseJoinInvite(blob, now?)` (verifies sig + expiry); `verifyBondAttestation(event)`
-→ `{ valid, attesterPubHex?, subjectPubHex? }` (single-attestation only — **no**
+→ `{ ok, attesterPubHex?, subjectPubHex? }` (single-attestation only — **no**
 counting/graph). Type `JoinInvite`.
 
 Exact byte layouts (the ECDH construction + frozen vector, invite canonical bytes,

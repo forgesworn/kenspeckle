@@ -126,13 +126,17 @@ Words are derived with `spoken-token`'s `deriveDirectionalPair`, namespace
 `KINDRED_BOND_NAMESPACE = 'kindred:bond'`.
 
 ```
+// DEFAULT parameterisation (namespace 'kindred:bond', roleOrder 'sorted'):
 roles = [aPubHex, bPubHex] sorted lexicographically → [lo, hi]   (order-independent)
 pair  = deriveDirectionalPair(secretHex, 'kindred:bond', [lo, hi], counter)
 mine   = pair[myOwnPubHex]      // the word I speak
 theirs = pair[counterpartyPub]  // the word I expect to hear
 ```
 
-- **Roles are the two pubkeys sorted** to a canonical `[lo, hi]`, so both seats
+The namespace and role order are overridable via an optional `opts` argument for
+**signet-me migration compatibility** — see §2.1.
+
+- **Roles are the two pubkeys sorted** to a canonical `[lo, hi]` (by default), so both seats
   feed `deriveDirectionalPair` the identical `(secret, namespace, roles, counter)`
   and therefore agree on the pair. Each seat's own pubkey selects which role token
   is "mine" vs "theirs."
@@ -147,6 +151,61 @@ theirs = pair[counterpartyPub]  // the word I expect to hear
   word via `bondWords` and **constant-time-compares** it (`timingSafeStringEqual`
   from `spoken-token/crypto`) against what was spoken — a constant-time compare so
   early-exit timing can't leak how many leading characters of a guess were right.
+- **`verifyBondWord` returns `{ ok }`** (a bare boolean verdict — `ok:true` iff the
+  spoken word matched). It accepts an optional `tolerance` (below) that widens the
+  match to a counter window; with `tolerance > 0` every candidate counter is checked
+  with a constant-time compare and the verdicts are OR-accumulated **without
+  early-return**, so timing does not leak **which** counter matched beyond `ok`.
+
+### 2.1 signet-me compatibility (migration continuity)
+
+signet-app's pre-migration `signet-me` derives its directional words with the SAME
+`deriveDirectionalPair` primitive but **different parameters**:
+
+| Parameter | `signet-me` (signet-protocol) | kindred default |
+|-----------|-------------------------------|-----------------|
+| namespace | `'signet:me'` | `'kindred:bond'` (`KINDRED_BOND_NAMESPACE`) |
+| roles | **caller-order** `[myPubkey, theirPubkey]` (NOT sorted) | **sorted** `[lo, hi]` |
+| counter | `getCounter(now, 30)` (30 s rotation) | the consumer's chosen `counter` arg |
+| tolerance | `±1` epoch (clock-skew window) | `0` (exact counter) |
+
+So **with kindred's DEFAULT opts the words DIFFER from `signet-me`'s** — a naive
+migration silently changes a contact's verification words. To let a migrated contact
+cross-verify with a peer who has **not** migrated yet, `bondWords` / `verifyBondWord`
+take an optional final `opts` that reproduce `signet-me`'s parameterisation
+**exactly** (the mapping was confirmed by reading `signet/src/signet-me.ts`):
+
+```typescript
+// Reproduce signet-me's words (each seat passes its OWN pubkey first — the [myPub, theirPub] order):
+bondWords(secret, myPub, theirPub, counter, { namespace: 'signet:me', roleOrder: 'caller' })
+verifyBondWord(secret, myPub, theirPub, counter, spoken,
+               { namespace: 'signet:me', roleOrder: 'caller', tolerance: 1 })
+```
+
+- `namespace` — default `'kindred:bond'`; `'signet:me'` for compat. **This is the
+  load-bearing knob**: changing the namespace changes the derived words.
+- `roleOrder` — `'sorted'` (default) feeds `[lo, hi] = sort([a,b])`; `'caller'` feeds
+  `[aPubHex, bPubHex]` **verbatim**, so `aPubHex` is the "my" role — matching
+  `signet-me`'s `[myPubkey, theirPubkey]`. **Empirical note (verified against the
+  installed `spoken-token`):** `deriveDirectionalPair` derives each word from
+  `namespace + '\0' + role` — i.e. from the role **string**, *independent of its
+  position in the tuple*. So `pair[X]` is the same whether roles are `[X,Y]` or `[Y,X]`,
+  and `roleOrder` therefore **does not change `bondWords`'s output** for a fixed arg
+  order (`mine = pair[aPubHex]` either way). It is retained as an **explicit intent /
+  forward-compat** knob (a guard, should role-derivation ever become position-sensitive);
+  for this spoken-token, the `namespace` alone reproduces `signet-me`. (Cross-agreement
+  already holds under the default `'sorted'` because each seat picks its own pubkey's
+  word, and that word is order-independent — so each seat still passes its own pubkey as
+  `aPubHex`.)
+- `tolerance` (`verifyBondWord` only) — default `0`; `t` accepts `spoken` if it matches
+  the counterparty word at any counter in `[counter-t, counter+t]`, mirroring
+  `signet-me`'s ±1 clock-skew window. kindred reproduces the words **via params** (it
+  takes `counter` as an argument rather than deriving it from wall-clock).
+
+The opts are **additive and backward-compatible**: every existing call with no `opts`
+keeps the original `'kindred:bond'` + `'sorted'` + exact-counter behaviour. **Both
+peers must either upgrade together or pass the `signet-me` opts** during rollout (in
+practice: the `signet:me` namespace, plus a `tolerance` for the clock-skew window).
 
 ---
 
@@ -363,7 +422,8 @@ claiming a key it doesn't control.
 order: (a) `verifyEvent` (sig + id); (b) kind `31000`; (c) a
 `["type","kindred-bond"]` tag (the exact discriminator `nostr-attestations` emits —
 verified against the real `buildBondAttestation` output, not guessed); (d) a subject
-`["p", <64-hex>]` tag. Returns `{ valid, attesterPubHex: event.pubkey, subjectPubHex }`.
+`["p", <64-hex>]` tag. Returns `{ ok, attesterPubHex: event.pubkey, subjectPubHex }`
+(`ok:true` on success; `{ ok:false }` otherwise).
 
 This is **per-attestation verification ONLY**. Counting a member's attestations into
 a set of **distinct verified humans** (the collective/guild sybil-resistance of

@@ -162,12 +162,12 @@ describe('buildKeyControlChallenge', () => {
 // --- verifyKeyControl (LIVE control; fail-closed) -------------------------------------------------
 
 describe('verifyKeyControl — proves LIVE key control (replay-resistant)', () => {
-  it('proven:true when the pinned key signs an event whose content === nonce', () => {
+  it('ok:true when the pinned key signs an event whose content === nonce', () => {
     const { sk, pk } = freshKeypair()
     const entry = pinManual(pk)
     const { nonce } = buildKeyControlChallenge()
     const ev = signEvent(sk, nonce)
-    expect(verifyKeyControl(entry, nonce, ev)).toEqual({ proven: true })
+    expect(verifyKeyControl(entry, nonce, ev)).toEqual({ ok: true })
   })
 
   it('nonce-mismatch when the signed content is not exactly the challenge nonce', () => {
@@ -175,7 +175,7 @@ describe('verifyKeyControl — proves LIVE key control (replay-resistant)', () =
     const entry = pinManual(pk)
     const { nonce } = buildKeyControlChallenge()
     const ev = signEvent(sk, 'some other content') // valid sig, wrong content
-    expect(verifyKeyControl(entry, nonce, ev)).toEqual({ proven: false, reason: 'nonce-mismatch' })
+    expect(verifyKeyControl(entry, nonce, ev)).toEqual({ ok: false, reason: 'nonce-mismatch' })
   })
 
   it('pubkey-not-current-pin when a DIFFERENT key signs the nonce', () => {
@@ -185,7 +185,7 @@ describe('verifyKeyControl — proves LIVE key control (replay-resistant)', () =
     const { nonce } = buildKeyControlChallenge()
     const ev = signEvent(impostor.sk, nonce) // impostor signs the fresh nonce correctly...
     // ...but it's not the pinned key → fail closed.
-    expect(verifyKeyControl(entry, nonce, ev)).toEqual({ proven: false, reason: 'pubkey-not-current-pin' })
+    expect(verifyKeyControl(entry, nonce, ev)).toEqual({ ok: false, reason: 'pubkey-not-current-pin' })
   })
 
   it('does NOT accept a previousPubkeys key (must be the CURRENT pin)', () => {
@@ -194,7 +194,7 @@ describe('verifyKeyControl — proves LIVE key control (replay-resistant)', () =
     const entry = pinManual(cur.pk, { previousPubkeys: [old.pk] })
     const { nonce } = buildKeyControlChallenge()
     const ev = signEvent(old.sk, nonce)
-    expect(verifyKeyControl(entry, nonce, ev)).toEqual({ proven: false, reason: 'pubkey-not-current-pin' })
+    expect(verifyKeyControl(entry, nonce, ev)).toEqual({ ok: false, reason: 'pubkey-not-current-pin' })
   })
 
   it('revoked when the entry is revoked (checked FIRST, before pubkey/nonce/sig)', () => {
@@ -202,7 +202,7 @@ describe('verifyKeyControl — proves LIVE key control (replay-resistant)', () =
     const entry = pinManual(pk, { revoked: true })
     const { nonce } = buildKeyControlChallenge()
     const ev = signEvent(sk, nonce) // even a perfect proof must fail closed once revoked
-    expect(verifyKeyControl(entry, nonce, ev)).toEqual({ proven: false, reason: 'revoked' })
+    expect(verifyKeyControl(entry, nonce, ev)).toEqual({ ok: false, reason: 'revoked' })
   })
 
   it('bad-signature when the event is tampered after signing (content mutated, not re-signed)', () => {
@@ -216,7 +216,7 @@ describe('verifyKeyControl — proves LIVE key control (replay-resistant)', () =
       e.sig = (ev.sig.slice(0, -1) + (ev.sig.endsWith('a') ? 'b' : 'a'))
     })
     const r = verifyKeyControl(entry, nonce, tampered)
-    expect(r).toEqual({ proven: false, reason: 'bad-signature' })
+    expect(r).toEqual({ ok: false, reason: 'bad-signature' })
   })
 
   it('bad-nonce for an EMPTY nonce + a replayed empty-content event (the replay hole)', () => {
@@ -228,7 +228,7 @@ describe('verifyKeyControl — proves LIVE key control (replay-resistant)', () =
     const { sk, pk } = freshKeypair()
     const entry = pinManual(pk)
     const replayed = signEvent(sk, '') // a real, genuinely-signed empty-content event
-    expect(verifyKeyControl(entry, '', replayed)).toEqual({ proven: false, reason: 'bad-nonce' })
+    expect(verifyKeyControl(entry, '', replayed)).toEqual({ ok: false, reason: 'bad-nonce' })
   })
 
   it('bad-nonce for a short / non-hex nonce (must be the 64-hex buildKeyControlChallenge shape)', () => {
@@ -237,33 +237,33 @@ describe('verifyKeyControl — proves LIVE key control (replay-resistant)', () =
     // Too short (the claimant even signs it correctly) → still bad-nonce, fail-closed.
     const shortNonce = 'abc123'
     const evShort = signEvent(sk, shortNonce)
-    expect(verifyKeyControl(entry, shortNonce, evShort)).toEqual({ proven: false, reason: 'bad-nonce' })
+    expect(verifyKeyControl(entry, shortNonce, evShort)).toEqual({ ok: false, reason: 'bad-nonce' })
     // Right length but non-hex characters → bad-nonce.
     const nonHexNonce = 'g'.repeat(64)
     const evNonHex = signEvent(sk, nonHexNonce)
-    expect(verifyKeyControl(entry, nonHexNonce, evNonHex)).toEqual({ proven: false, reason: 'bad-nonce' })
+    expect(verifyKeyControl(entry, nonHexNonce, evNonHex)).toEqual({ ok: false, reason: 'bad-nonce' })
     // Uppercase hex is NOT the lowercase shape buildKeyControlChallenge emits → bad-nonce.
     const upperNonce = 'A'.repeat(64)
     const evUpper = signEvent(sk, upperNonce)
-    expect(verifyKeyControl(entry, upperNonce, evUpper)).toEqual({ proven: false, reason: 'bad-nonce' })
+    expect(verifyKeyControl(entry, upperNonce, evUpper)).toEqual({ ok: false, reason: 'bad-nonce' })
   })
 
   it('bad-nonce is checked AFTER revoked (a dead pin still reports revoked first)', () => {
     const { sk, pk } = freshKeypair()
     const entry = pinManual(pk, { revoked: true })
     const replayed = signEvent(sk, '')
-    expect(verifyKeyControl(entry, '', replayed)).toEqual({ proven: false, reason: 'revoked' })
+    expect(verifyKeyControl(entry, '', replayed)).toEqual({ ok: false, reason: 'revoked' })
   })
 })
 
 // --- attributeSignature (possibly-OLD artifact; current-pin only) ---------------------------------
 
 describe('attributeSignature — attributes a signed artifact to the CURRENT pin only', () => {
-  it('genuine:true for an event signed by the current pin', () => {
+  it('ok:true for an event signed by the current pin', () => {
     const { sk, pk } = freshKeypair()
     const entry = pinManual(pk)
     const ev = signEvent(sk, 'a signed statement from the figure')
-    expect(attributeSignature(entry, ev)).toEqual({ genuine: true })
+    expect(attributeSignature(entry, ev)).toEqual({ ok: true })
   })
 
   it('rotated-away-key for an event whose pubkey is in previousPubkeys', () => {
@@ -271,14 +271,14 @@ describe('attributeSignature — attributes a signed artifact to the CURRENT pin
     const cur = freshKeypair()
     const entry = pinManual(cur.pk, { previousPubkeys: [old.pk] })
     const ev = signEvent(old.sk, 'old statement')
-    expect(attributeSignature(entry, ev)).toEqual({ genuine: false, reason: 'rotated-away-key' })
+    expect(attributeSignature(entry, ev)).toEqual({ ok: false, reason: 'rotated-away-key' })
   })
 
   it('revoked (checked first) even for an otherwise-genuine current-pin event', () => {
     const { sk, pk } = freshKeypair()
     const entry = pinManual(pk, { revoked: true })
     const ev = signEvent(sk, 'statement')
-    expect(attributeSignature(entry, ev)).toEqual({ genuine: false, reason: 'revoked' })
+    expect(attributeSignature(entry, ev)).toEqual({ ok: false, reason: 'revoked' })
   })
 
   it('pubkey-mismatch for an unrelated key (not the pin, not a previous key)', () => {
@@ -286,7 +286,7 @@ describe('attributeSignature — attributes a signed artifact to the CURRENT pin
     const other = freshKeypair()
     const entry = pinManual(pk)
     const ev = signEvent(other.sk, 'statement')
-    expect(attributeSignature(entry, ev)).toEqual({ genuine: false, reason: 'pubkey-mismatch' })
+    expect(attributeSignature(entry, ev)).toEqual({ ok: false, reason: 'pubkey-mismatch' })
   })
 
   it('bad-signature for a current-pin event with a broken signature', () => {
@@ -297,7 +297,7 @@ describe('attributeSignature — attributes a signed artifact to the CURRENT pin
     const tampered = tamperedFromWire(ev, (e) => {
       e.content = 'a different statement'
     })
-    expect(attributeSignature(entry, tampered)).toEqual({ genuine: false, reason: 'bad-signature' })
+    expect(attributeSignature(entry, tampered)).toEqual({ ok: false, reason: 'bad-signature' })
   })
 })
 
@@ -449,10 +449,10 @@ describe('acceptKenRotation — explicit, user-confirmed pin move (no dual-accep
     }
     const accepted = acceptKenRotation(proposed)
     const oldEvent = signEvent(original.sk, 'old statement')
-    expect(attributeSignature(accepted, oldEvent)).toEqual({ genuine: false, reason: 'rotated-away-key' })
+    expect(attributeSignature(accepted, oldEvent)).toEqual({ ok: false, reason: 'rotated-away-key' })
     // and the NEW key now attributes genuinely.
     const newEvent = signEvent(rotated.sk, 'new statement')
-    expect(attributeSignature(accepted, newEvent)).toEqual({ genuine: true })
+    expect(attributeSignature(accepted, newEvent)).toEqual({ ok: true })
   })
 
   it('appends to an existing previousPubkeys chain (multi-rotation history preserved)', () => {
@@ -483,11 +483,11 @@ describe('revokeKen — compromise announced, no successor → fail closed', () 
     expect(revoked.revoked).toBe(true)
 
     const ev = signEvent(sk, 'statement')
-    expect(attributeSignature(revoked, ev)).toEqual({ genuine: false, reason: 'revoked' })
+    expect(attributeSignature(revoked, ev)).toEqual({ ok: false, reason: 'revoked' })
 
     const { nonce } = buildKeyControlChallenge()
     const proof = signEvent(sk, nonce)
-    expect(verifyKeyControl(revoked, nonce, proof)).toEqual({ proven: false, reason: 'revoked' })
+    expect(verifyKeyControl(revoked, nonce, proof)).toEqual({ ok: false, reason: 'revoked' })
   })
 })
 

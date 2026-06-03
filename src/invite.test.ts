@@ -340,7 +340,7 @@ describe('verifyBondAttestation — single-attestation verification (spec §9.2)
     // Wire-clone to drop the verifiedSymbol cache so verifyEvent actually re-checks the signature.
     const wire = JSON.parse(JSON.stringify(finalized)) as NostrEvent
     const result = verifyBondAttestation(wire)
-    expect(result).toEqual({ valid: true, attesterPubHex: attesterPub, subjectPubHex: subject })
+    expect(result).toEqual({ ok: true, attesterPubHex: attesterPub, subjectPubHex: subject })
   })
 
   it('rejects a wrong-kind event (not 31000)', () => {
@@ -350,7 +350,7 @@ describe('verifyBondAttestation — single-attestation verification (spec §9.2)
       sk,
     ) as NostrEvent
     const wire = JSON.parse(JSON.stringify(ev)) as NostrEvent
-    expect(verifyBondAttestation(wire)).toEqual({ valid: false })
+    expect(verifyBondAttestation(wire)).toEqual({ ok: false })
   })
 
   it('rejects a tampered attestation whose signature no longer verifies', () => {
@@ -360,7 +360,7 @@ describe('verifyBondAttestation — single-attestation verification (spec §9.2)
     const tampered = tamperedFromWire(finalized, (e) => {
       e.content = 'tampered-after-signing'
     })
-    expect(verifyBondAttestation(tampered)).toEqual({ valid: false })
+    expect(verifyBondAttestation(tampered)).toEqual({ ok: false })
   })
 
   it('rejects a kind-31000 event missing the kindred-bond type tag', () => {
@@ -376,7 +376,7 @@ describe('verifyBondAttestation — single-attestation verification (spec §9.2)
       sk,
     ) as NostrEvent
     const wire = JSON.parse(JSON.stringify(ev)) as NostrEvent
-    expect(verifyBondAttestation(wire)).toEqual({ valid: false })
+    expect(verifyBondAttestation(wire)).toEqual({ ok: false })
   })
 
   it('rejects a kind-31000 kindred-bond event missing the subject p-tag', () => {
@@ -391,7 +391,7 @@ describe('verifyBondAttestation — single-attestation verification (spec §9.2)
       sk,
     ) as NostrEvent
     const wire = JSON.parse(JSON.stringify(ev)) as NostrEvent
-    expect(verifyBondAttestation(wire)).toEqual({ valid: false })
+    expect(verifyBondAttestation(wire)).toEqual({ ok: false })
   })
 
   it('rejects an event whose type tag is not exactly "kindred-bond" (e.g. a different attestation)', () => {
@@ -409,6 +409,6 @@ describe('verifyBondAttestation — single-attestation verification (spec §9.2)
       sk,
     ) as NostrEvent
     const wire = JSON.parse(JSON.stringify(ev)) as NostrEvent
-    expect(verifyBondAttestation(wire)).toEqual({ valid: false })
+    expect(verifyBondAttestation(wire)).toEqual({ ok: false })
   })
 })

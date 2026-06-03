@@ -197,7 +197,7 @@ export function buildKeyControlChallenge(): { nonce: string; createdAt: number }
  * *live*, in contrast to `attributeSignature`, which is replayable by design.
  *
  * Checks, in this exact order (each short-circuits, fail-closed):
- *   1. `revoked`                  → `{ proven:false, reason:'revoked' }` (a dead pin proves nothing).
+ *   1. `revoked`                  → `{ ok:false, reason:'revoked' }` (a dead pin proves nothing).
  *   2. nonce STRENGTH             → else `'bad-nonce'`. The challenge nonce MUST be exactly 64
  *                                   lowercase-hex chars (the 32 random bytes `buildKeyControlChallenge`
  *                                   emits). This is the load-bearing replay defence: WITHOUT it, a
@@ -209,24 +209,26 @@ export function buildKeyControlChallenge(): { nonce: string; createdAt: number }
  *                                   accepted — live control must be of the key in force NOW).
  *   4. `content === nonce`        → else `'nonce-mismatch'` (binds the proof to THIS challenge).
  *   5. `verifyEvent` (sig + id)   → else `'bad-signature'`.
- *   6. otherwise                  → `{ proven:true }`.
+ *   6. otherwise                  → `{ ok:true }`.
+ *
+ * @returns `{ ok, reason? }` — `ok:true` only when LIVE control is proven; `reason` names the failure.
  */
 export function verifyKeyControl(
   entry: KenEntry,
   nonce: string,
   signedEvent: NostrEvent,
-): { proven: boolean; reason?: string } {
-  if (entry.revoked) return { proven: false, reason: 'revoked' }
+): { ok: boolean; reason?: string } {
+  if (entry.revoked) return { ok: false, reason: 'revoked' }
   // Nonce-strength gate (fail-closed, checked EARLY): a challenge that is not the full 64-hex random
   // shape is rejected before we ever trust `content === nonce`. This closes the empty/weak-nonce
   // replay hole and is what makes the impersonation-resistance claim honest.
   if (typeof nonce !== 'string' || !CHALLENGE_NONCE.test(nonce)) {
-    return { proven: false, reason: 'bad-nonce' }
+    return { ok: false, reason: 'bad-nonce' }
   }
-  if (signedEvent.pubkey !== entry.pubkey) return { proven: false, reason: 'pubkey-not-current-pin' }
-  if (signedEvent.content !== nonce) return { proven: false, reason: 'nonce-mismatch' }
-  if (!verifyEvent(signedEvent)) return { proven: false, reason: 'bad-signature' }
-  return { proven: true }
+  if (signedEvent.pubkey !== entry.pubkey) return { ok: false, reason: 'pubkey-not-current-pin' }
+  if (signedEvent.content !== nonce) return { ok: false, reason: 'nonce-mismatch' }
+  if (!verifyEvent(signedEvent)) return { ok: false, reason: 'bad-signature' }
+  return { ok: true }
 }
 
 /**
@@ -238,24 +240,27 @@ export function verifyKeyControl(
  * nonce). Use attribution to credit an artifact; use key-control to authenticate a live party.
  *
  * Checks, in this exact order (each short-circuits, fail-closed):
- *   1. `revoked`                          → `{ genuine:false, reason:'revoked' }`.
+ *   1. `revoked`                          → `{ ok:false, reason:'revoked' }`.
  *   2. pubkey ∈ `previousPubkeys`         → `'rotated-away-key'` (explicitly distinguished from a
  *                                           random mismatch: this key WAS the pin but was rotated out).
  *   3. pubkey === current pin             → else `'pubkey-mismatch'`.
  *   4. `verifyEvent` (sig + id)           → else `'bad-signature'`.
- *   5. otherwise                          → `{ genuine:true }`.
+ *   5. otherwise                          → `{ ok:true }`.
+ *
+ * @returns `{ ok, reason? }` — `ok:true` only when the CURRENT pin genuinely signed `event`; `reason`
+ *          names the failure. (Replayable by design — `ok:true` does NOT prove live control.)
  */
 export function attributeSignature(
   entry: KenEntry,
   event: NostrEvent,
-): { genuine: boolean; reason?: string } {
-  if (entry.revoked) return { genuine: false, reason: 'revoked' }
+): { ok: boolean; reason?: string } {
+  if (entry.revoked) return { ok: false, reason: 'revoked' }
   if (entry.previousPubkeys?.includes(event.pubkey)) {
-    return { genuine: false, reason: 'rotated-away-key' }
+    return { ok: false, reason: 'rotated-away-key' }
   }
-  if (event.pubkey !== entry.pubkey) return { genuine: false, reason: 'pubkey-mismatch' }
-  if (!verifyEvent(event)) return { genuine: false, reason: 'bad-signature' }
-  return { genuine: true }
+  if (event.pubkey !== entry.pubkey) return { ok: false, reason: 'pubkey-mismatch' }
+  if (!verifyEvent(event)) return { ok: false, reason: 'bad-signature' }
+  return { ok: true }
 }
 
 /**
