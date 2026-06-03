@@ -126,14 +126,14 @@ Words are derived with `spoken-token`'s `deriveDirectionalPair`, namespace
 `KINDRED_BOND_NAMESPACE = 'kindred:bond'`.
 
 ```
-// DEFAULT parameterisation (namespace 'kindred:bond', roleOrder 'sorted'):
+// DEFAULT parameterisation (namespace 'kindred:bond'):
 roles = [aPubHex, bPubHex] sorted lexicographically → [lo, hi]   (order-independent)
 pair  = deriveDirectionalPair(secretHex, 'kindred:bond', [lo, hi], counter)
 mine   = pair[myOwnPubHex]      // the word I speak
 theirs = pair[counterpartyPub]  // the word I expect to hear
 ```
 
-The namespace and role order are overridable via an optional `opts` argument for
+The namespace is overridable via an optional `opts` argument for
 **signet-me migration compatibility** — see §2.1.
 
 - **Roles are the two pubkeys sorted** to a canonical `[lo, hi]` (by default), so both seats
@@ -165,7 +165,6 @@ signet-app's pre-migration `signet-me` derives its directional words with the SA
 | Parameter | `signet-me` (signet-protocol) | kindred default |
 |-----------|-------------------------------|-----------------|
 | namespace | `'signet:me'` | `'kindred:bond'` (`KINDRED_BOND_NAMESPACE`) |
-| roles | **caller-order** `[myPubkey, theirPubkey]` (NOT sorted) | **sorted** `[lo, hi]` |
 | counter | `getCounter(now, 30)` (30 s rotation) | the consumer's chosen `counter` arg |
 | tolerance | `±1` epoch (clock-skew window) | `0` (exact counter) |
 
@@ -177,35 +176,31 @@ take an optional final `opts` that reproduce `signet-me`'s parameterisation
 
 ```typescript
 // Reproduce signet-me's words (each seat passes its OWN pubkey first — the [myPub, theirPub] order):
-bondWords(secret, myPub, theirPub, counter, { namespace: 'signet:me', roleOrder: 'caller' })
+bondWords(secret, myPub, theirPub, counter, { namespace: 'signet:me' })
 verifyBondWord(secret, myPub, theirPub, counter, spoken,
-               { namespace: 'signet:me', roleOrder: 'caller', tolerance: 1 })
+               { namespace: 'signet:me', tolerance: 1 })
 ```
 
 - `namespace` — default `'kindred:bond'`; `'signet:me'` for compat. **This is the
-  load-bearing knob**: changing the namespace changes the derived words.
-- `roleOrder` — `'sorted'` (default) feeds `[lo, hi] = sort([a,b])`; `'caller'` feeds
-  `[aPubHex, bPubHex]` **verbatim**, so `aPubHex` is the "my" role — matching
-  `signet-me`'s `[myPubkey, theirPubkey]`. **Empirical note (verified against the
-  installed `spoken-token`):** `deriveDirectionalPair` derives each word from
-  `namespace + '\0' + role` — i.e. from the role **string**, *independent of its
-  position in the tuple*. So `pair[X]` is the same whether roles are `[X,Y]` or `[Y,X]`,
-  and `roleOrder` therefore **does not change `bondWords`'s output** for a fixed arg
-  order (`mine = pair[aPubHex]` either way). It is retained as an **explicit intent /
-  forward-compat** knob (a guard, should role-derivation ever become position-sensitive);
-  for this spoken-token, the `namespace` alone reproduces `signet-me`. (Cross-agreement
-  already holds under the default `'sorted'` because each seat picks its own pubkey's
-  word, and that word is order-independent — so each seat still passes its own pubkey as
-  `aPubHex`.)
+  load-bearing knob**: changing the namespace changes the derived words. signet-me uses
+  caller-order roles `[myPubkey, theirPubkey]` while kindred sorts to `[lo, hi]`, but
+  **that ordering difference is immaterial** — and that is why there is no role-order
+  knob. **Empirical note (verified against the installed `spoken-token`):**
+  `deriveDirectionalPair` derives each word from `namespace + '\0' + role` — i.e. from
+  the role **string**, *independent of its position in the tuple*. So `pair[X]` is the
+  same whether roles are `[X,Y]` or `[Y,X]`, and `mine = pair[aPubHex]` either way. Each
+  seat still passes its own pubkey as `aPubHex`, so it picks its own role's word, and
+  cross-agreement holds under the default sort. The `namespace` alone reproduces
+  `signet-me`.
 - `tolerance` (`verifyBondWord` only) — default `0`; `t` accepts `spoken` if it matches
   the counterparty word at any counter in `[counter-t, counter+t]`, mirroring
   `signet-me`'s ±1 clock-skew window. kindred reproduces the words **via params** (it
   takes `counter` as an argument rather than deriving it from wall-clock).
 
 The opts are **additive and backward-compatible**: every existing call with no `opts`
-keeps the original `'kindred:bond'` + `'sorted'` + exact-counter behaviour. **Both
-peers must either upgrade together or pass the `signet-me` opts** during rollout (in
-practice: the `signet:me` namespace, plus a `tolerance` for the clock-skew window).
+keeps the original `'kindred:bond'` + exact-counter behaviour. **Both peers must either
+upgrade together or pass the `signet-me` opts** during rollout (in practice: the
+`signet:me` namespace, plus a `tolerance` for the clock-skew window).
 
 ---
 

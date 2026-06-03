@@ -134,22 +134,17 @@ describe('verifyBondWord — constant-time compare of the counterparty word', ()
 })
 
 // --- signet-me compatibility opts (migration continuity) ------------------------------------------
-// signet-app's `signet-me` derives words with namespace 'signet:me' + CALLER-ORDER roles
-// [myPub, theirPub] (NOT sorted) + a ±tolerance counter window. These opts let a migrated kindred
-// contact reproduce those exact words to cross-verify with a peer who hasn't migrated yet. We verify
-// the opts behaviour IN ISOLATION (no signet/signet-protocol dependency) — the param mapping itself
-// was confirmed by reading signet/src/signet-me.ts.
+// signet-app's `signet-me` derives words with namespace 'signet:me' + a ±tolerance counter window.
+// The `namespace` opt lets a migrated kindred contact reproduce those exact words to cross-verify with
+// a peer who hasn't migrated yet (each seat passes its OWN pubkey first). We verify the opt behaviour
+// IN ISOLATION (no signet/signet-protocol dependency) — the param mapping itself was confirmed by
+// reading signet/src/signet-me.ts.
 //
-// IMPORTANT EMPIRICAL FINDING (verified against the installed spoken-token): `deriveDirectionalPair`
+// WHY THERE IS NO role-order knob (verified against the installed spoken-token): `deriveDirectionalPair`
 // keys each word on `namespace + '\0' + role` — i.e. PURELY on the role STRING, independent of the
-// role's POSITION in the tuple. So `pair[X]` is identical whether roles are `[X,Y]` or `[Y,X]`. Two
-// consequences:
-//   • `namespace` DOES change the words (asserted below) — it is the load-bearing compat knob.
-//   • `roleOrder` does NOT change `bondWords`'s output for a FIXED arg order (sorted vs caller produce
-//     the same `mine`/`theirs`), because `mine = pair[aPubHex]` regardless of tuple order. `roleOrder`
-//     is kept as an explicit, additive intent knob (and a guard should role-derivation ever become
-//     position-sensitive); for THIS spoken-token, signet-me compat is achieved by `namespace` alone.
-// NB: PUB_A ('4f35…') > PUB_B ('466d…').
+// role's POSITION in the tuple. So `pair[X]` is identical whether roles are `[X,Y]` or `[Y,X]`, and
+// `namespace` is the only knob that changes the words; signet-me compat is achieved by `namespace`
+// alone. NB: PUB_A ('4f35…') > PUB_B ('466d…').
 
 describe('bondWords / verifyBondWord — signet-me compat opts', () => {
   it('a different namespace yields different words for the same (secret, pubkeys, counter)', () => {
@@ -160,30 +155,8 @@ describe('bondWords / verifyBondWord — signet-me compat opts', () => {
     expect(signetMe.theirs).not.toBe(def.theirs)
   })
 
-  it("roleOrder is output-invariant for a fixed arg order (spoken-token keys words per-role string)", () => {
-    // PUB_A > PUB_B, so sorted roles [PUB_B, PUB_A] differ as a TUPLE from caller roles [PUB_A, PUB_B];
-    // but because deriveDirectionalPair keys on the role string (not its index), mine=pair[PUB_A] and
-    // theirs=pair[PUB_B] are identical under both — so the function output is the same.
-    const sorted = bondWords(SECRET, PUB_A, PUB_B, 5, { roleOrder: 'sorted' })
-    const caller = bondWords(SECRET, PUB_A, PUB_B, 5, { roleOrder: 'caller' })
-    expect(caller).toEqual(sorted)
-  })
-
-  it("the SET of words is order-independent under BOTH role orders (per-role keying)", () => {
-    // Swapping args swaps the mine/theirs LABELS, but the SET {mine,theirs} = {word(PUB_A),word(PUB_B)}
-    // is invariant under arg-swap for either role order — because each word is keyed purely by pubkey.
-    for (const roleOrder of ['sorted', 'caller'] as const) {
-      const ab = bondWords(SECRET, PUB_A, PUB_B, 5, { roleOrder })
-      const ba = bondWords(SECRET, PUB_B, PUB_A, 5, { roleOrder })
-      expect(new Set([ab.mine, ab.theirs])).toEqual(new Set([ba.mine, ba.theirs]))
-      // and the labels DO flip (directional): A's mine is B's theirs.
-      expect(ab.mine).toBe(ba.theirs)
-      expect(ab.theirs).toBe(ba.mine)
-    }
-  })
-
-  it("two seats reproduce signet-me's cross words with { namespace, roleOrder:'caller' } (each passes own pub first)", () => {
-    const opts = { namespace: 'signet:me', roleOrder: 'caller' as const }
+  it("two seats reproduce signet-me's cross words with { namespace: 'signet:me' } (each passes own pub first)", () => {
+    const opts = { namespace: 'signet:me' }
     // A's seat (A passes itself first); B's seat (B passes itself first) — signet-me's [myPub, theirPub].
     const A = bondWords(SECRET, PUB_A, PUB_B, 9, opts)
     const B = bondWords(SECRET, PUB_B, PUB_A, 9, opts)
@@ -193,7 +166,7 @@ describe('bondWords / verifyBondWord — signet-me compat opts', () => {
   })
 
   it('tolerance:1 accepts a word generated at counter-1 and counter+1', () => {
-    const opts = { namespace: 'signet:me', roleOrder: 'caller' as const }
+    const opts = { namespace: 'signet:me' }
     // The counterparty's word, as it would have been at the neighbouring counters.
     const prev = bondWords(SECRET, PUB_A, PUB_B, 99, opts).theirs
     const next = bondWords(SECRET, PUB_A, PUB_B, 101, opts).theirs
@@ -204,26 +177,23 @@ describe('bondWords / verifyBondWord — signet-me compat opts', () => {
   })
 
   it('tolerance:1 still rejects an unrelated word', () => {
-    const vopts = { namespace: 'signet:me', roleOrder: 'caller' as const, tolerance: 1 }
+    const vopts = { namespace: 'signet:me', tolerance: 1 }
     expect(verifyBondWord(SECRET, PUB_A, PUB_B, 100, 'definitely-not-the-word', vopts)).toEqual({
       ok: false,
     })
   })
 
   it('tolerance:1 rejects a word two counters away (outside the ±1 window)', () => {
-    const opts = { namespace: 'signet:me', roleOrder: 'caller' as const }
+    const opts = { namespace: 'signet:me' }
     const twoAway = bondWords(SECRET, PUB_A, PUB_B, 102, opts).theirs
     const vopts = { ...opts, tolerance: 1 }
     expect(verifyBondWord(SECRET, PUB_A, PUB_B, 100, twoAway, vopts)).toEqual({ ok: false })
   })
 
-  it('default opts reproduce the existing behaviour (kindred:bond + sorted + exact counter)', () => {
-    // Explicit defaults must equal the no-opts call — the additive params are backward-compatible.
+  it('default opts reproduce the existing behaviour (kindred:bond + exact counter)', () => {
+    // Explicit default must equal the no-opts call — the additive param is backward-compatible.
     const noOpts = bondWords(SECRET, PUB_A, PUB_B, 7)
-    const explicit = bondWords(SECRET, PUB_A, PUB_B, 7, {
-      namespace: KINDRED_BOND_NAMESPACE,
-      roleOrder: 'sorted',
-    })
+    const explicit = bondWords(SECRET, PUB_A, PUB_B, 7, { namespace: KINDRED_BOND_NAMESPACE })
     expect(explicit).toEqual(noOpts)
     // verifyBondWord with default opts (tolerance 0) matches only the exact counter.
     expect(verifyBondWord(SECRET, PUB_A, PUB_B, 7, noOpts.theirs)).toEqual({ ok: true })
@@ -233,10 +203,10 @@ describe('bondWords / verifyBondWord — signet-me compat opts', () => {
 
   it('verifyBondWord with signet-me opts accepts a word built with the matching bondWords opts', () => {
     // End-to-end: derive with the signet-me opts, verify with the SAME opts → ok.
-    const opts = { namespace: 'signet:me', roleOrder: 'caller' as const }
+    const opts = { namespace: 'signet:me' }
     const theirWord = bondWords(SECRET, PUB_A, PUB_B, 12, opts).theirs
     expect(verifyBondWord(SECRET, PUB_A, PUB_B, 12, theirWord, opts)).toEqual({ ok: true })
-    // and the DEFAULT-opts verify rejects it (different namespace+roles → different word).
+    // and the DEFAULT-opts verify rejects it (different namespace → different word).
     expect(verifyBondWord(SECRET, PUB_A, PUB_B, 12, theirWord)).toEqual({ ok: false })
   })
 })
