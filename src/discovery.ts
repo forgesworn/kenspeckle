@@ -10,7 +10,7 @@
 // This layer holds no state, opens no sockets, and never enumerates a server's membership — it only
 // tests the consumer's OWN contacts against a published filter (presence, not a member list).
 
-import { parseFilter, testMembership, memberKey, verifyFilterBlob, type MembershipFilter } from 'tessera-kit'
+import { parseFilter, testMembership, memberKey, verifyFilterBlob, type MembershipFilter } from '@forgesworn/tessera-kit'
 import { verifyEvent } from 'nostr-tools/pure'
 import { schnorr } from '@noble/curves/secp256k1.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
@@ -174,7 +174,7 @@ export function parseFilterPublication(
 
   // 4. In-blob Schnorr provenance signature (§10 invariant: consumers verify the in-blob sig).
   const sigCheck = verifyFilterBlob(blob)
-  if (!sigCheck.valid) return null
+  if (!sigCheck.ok) return null
 
   // 5. Parse the d-tag → namespace / serverId. Prefix is `kindred:members:`; the namespace is the
   //    segment up to the NEXT colon, and the serverId is the rest (so a serverId may itself contain

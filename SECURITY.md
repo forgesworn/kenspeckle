@@ -113,13 +113,13 @@ and a consumer **MUST** check **both** before trusting any hit:
 1. the **Nostr event signature** (NIP-01 transport integrity), via `verifyEvent`
    inside `parseFilterPublication`; and
 2. the **in-blob Schnorr provenance signature** (`verifyFilterBlob` from
-   tessera-kit), whose `signerPubkeyHex` the consumer **MUST compare against a
+   @forgesworn/tessera-kit), whose `signerPubkeyHex` the consumer **MUST compare against a
    pinned / out-of-band-known server key**.
 
 `parseFilterPublication` returning a non-null result means only that both signatures
 are **internally consistent** — it is **not** trust. Anyone can mint a validly
 self-signed blob under their own key; the **pinned-key comparison** is what defeats
-forged-filter doxxing. (Cross-ref: tessera-kit SECURITY.md §3.)
+forged-filter doxxing. (Cross-ref: @forgesworn/tessera-kit SECURITY.md §3.)
 
 > **`Symbol(verified)` footgun.** `nostr-tools`' `verifyEvent` caches its result in
 > an enumerable `Symbol(verified)`. An object-spread (`{...ev}`) copies that cache,
@@ -144,7 +144,7 @@ server's next rebuild). The honest limits:
   un-consented-by-*others* presence locator for the members included in them.
   `disclosureFor` reports `crossServerDiscoverable` for open pools.
 - **Keying is a speed-bump, not a member-privacy boundary** (cross-ref:
-  tessera-kit SECURITY.md §1). It restricts probing to salt-holders; it does **not**
+  @forgesworn/tessera-kit SECURITY.md §1). It restricts probing to salt-holders; it does **not**
   confine probing to current members and does **not** survive a salt leak.
 
 **Real member privacy comes from per-context personas** (a different key per server,
@@ -220,7 +220,7 @@ In scope:
 Out of scope (by design, documented above):
 
 - Confirming presence of a **held specific key** in a pool (§7) — that is the
-  function of a membership filter (see tessera-kit SECURITY.md §2).
+  function of a membership filter (see @forgesworn/tessera-kit SECURITY.md §2).
 - Probing a keyed pool by a **salt-holder** (§7) — keying is a speed-bump.
 - Inability to cryptographically verify **removal** from a pool you left (§7).
 - Inability to zeroize the immutable bigint scalar / a key passed as a **string**

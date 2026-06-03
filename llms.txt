@@ -1,4 +1,4 @@
-# kindred
+# @forgesworn/kindred
 
 > An app wants to hold a user's relationships — family, people they've met and
 > verified, public keys they recognise — WITHOUT becoming a social network (no
@@ -6,30 +6,30 @@
 > primitives as plain data + pure functions: it holds relationships across three
 > social distances, runs the kith bond ceremony (byte-exact ECDH + spoken words),
 > pins and live-challenges recognised keys (ken), and tests a user's own contacts
-> against a server's published presence filter LOCALLY (over tessera-kit). No
+> against a server's published presence filter LOCALLY (over @forgesworn/tessera-kit). No
 > storage, no UI, no graph traversal — those are explicit non-goals.
 
 kindred is a protocol-neutral TypeScript library for VERIFIED RELATIONSHIPS:
 `kin` (family — mutual + guardianship), `kith` (mutually verified via ECDH +
 spoken-token words), `ken` (one-way recognised public keys). ESM-only, Node ≥ 22.
-Deps: `tessera-kit`, `spoken-token`, `nostr-attestations`, `@noble/*`,
+Deps: `@forgesworn/tessera-kit`, `spoken-token`, `nostr-attestations`, `@noble/*`,
 `@scure/base`; peer `nostr-tools`. It is the relationships brick of the Forgesworn /
 Signet ecosystem, consumed by signet-app.
 
 ## Getting Started
 
 ```
-npm i kindred
+npm i @forgesworn/kindred
 ```
 
-`tessera-kit` is a sibling NOT YET ON NPM. For local dev, pack + install the tarball
-(`cd ../tessera-kit && npm pack && cd ../kindred && npm i ../tessera-kit/tessera-kit-0.1.0.tgz`).
-To PUBLISH kindred, publish tessera-kit first — do NOT ship a `file:` dep.
+`@forgesworn/tessera-kit` is a sibling NOT YET ON NPM. For local dev, pack + install the tarball
+(`cd ../tessera-kit && npm pack && cd ../kindred && npm i ../tessera-kit/forgesworn-tessera-kit-0.1.0.tgz`).
+To PUBLISH kindred, publish @forgesworn/tessera-kit first — do NOT ship a `file:` dep.
 
 ```typescript
-import { deriveBondSecret, bondWords, verifyBondWord } from 'kindred/bond'
-import { pinKenFromNip05, buildKeyControlChallenge, verifyKeyControl } from 'kindred/ken'
-import { discoverPresent, parseFilterPublication } from 'kindred/discovery'
+import { deriveBondSecret, bondWords, verifyBondWord } from '@forgesworn/kindred/bond'
+import { pinKenFromNip05, buildKeyControlChallenge, verifyKeyControl } from '@forgesworn/kindred/ken'
+import { discoverPresent, parseFilterPublication } from '@forgesworn/kindred/discovery'
 
 // kith: derive the byte-exact shared secret, read directional words for a counter.
 const secret = deriveBondSecret(myPrivHex, theirPubHex)
@@ -66,7 +66,7 @@ const present = discoverPresent(parseFilter(pub.blob), myEntries, myPersonaPubHe
 - **Private annotations** — local recall aids (`groupId`/`label`/`note`/`blocked`),
   searchable in memory, NEVER serialised onto a wire (type-level + runtime); INCLUDED
   in the user's own encrypted self-backup (allowed — not a graph disclosure).
-- **Discovery** — kind 30444 publication (matches tessera-kit), `['n', namespace]`
+- **Discovery** — kind 30444 publication (matches @forgesworn/tessera-kit), `['n', namespace]`
   indexable tag, opt-out kind 30445. Verify BOTH the Nostr sig and the in-blob
   Schnorr sig against a pinned key before trusting any hit.
 
@@ -101,4 +101,4 @@ Full posture in SECURITY.md.
 - [README](https://github.com/forgesworn/kindred/blob/main/README.md): usage guide with kith / ken / discovery quickstarts
 - [PROTOCOL.md](https://github.com/forgesworn/kindred/blob/main/PROTOCOL.md): byte-exact ECDH + frozen migration vector, spoken-token usage, kind/tag allocation, invite canonical bytes, build/parse asymmetry
 - [SECURITY.md](https://github.com/forgesworn/kindred/blob/main/SECURITY.md): honest privacy posture (persona-scoping limits, NIP-05 TOFU, key-control vs attribution, annotations-never-serialised, pin-verify mandatory)
-- [tessera-kit](https://github.com/forgesworn/tessera-kit): the membership-presence filter kindred/discovery consumes
+- [@forgesworn/tessera-kit](https://github.com/forgesworn/tessera-kit): the membership-presence filter @forgesworn/kindred/discovery consumes

@@ -9,7 +9,7 @@ honest privacy posture (read it — several intuitive guarantees are deliberatel
 **not** made).
 
 `v1` for every wire format below (`HandshakePayload.v = 1`, `JoinInvite.v = 1`,
-`KFLT format_version = 1` in the sibling tessera-kit).
+`KFLT format_version = 1` in the sibling @forgesworn/tessera-kit).
 
 ## Notation
 
@@ -236,7 +236,7 @@ works — only `content` + sig + pubkey are inspected).
 
 ## 5. Discovery — kind allocation & publication shape (`./discovery`)
 
-Discovery is a thin layer over the sibling **tessera-kit** membership filter: a
+Discovery is a thin layer over the sibling **@forgesworn/tessera-kit** membership filter: a
 server publishes a signed, non-enumerable presence filter; a client tests its own
 contacts locally (presence, not a member list). kindred holds no state, opens no
 sockets, and never enumerates a server's membership.
@@ -249,8 +249,8 @@ KINDRED_OPTOUT_KIND  = 30445   // a member's opt-out request
 ```
 
 Both are **provisional and not yet NIP-registered**. `30444` **matches
-tessera-kit PROTOCOL.md §6 byte-for-byte** — the publication shape is shared so a
-tessera-kit-only server (no `kindred` dependency) can emit an identical event. It
+@forgesworn/tessera-kit PROTOCOL.md §6 byte-for-byte** — the publication shape is shared so a
+@forgesworn/tessera-kit-only server (no `kindred` dependency) can emit an identical event. It
 supersedes the `30078` placeholder from early design (`30078` is signet-app's
 contact-sync kind; reused here only as a historical note, never the recommended
 value).
@@ -265,11 +265,11 @@ Addressable event, `kind 30444`:
 | `["n", "<namespace>"]` | the single-letter **relay-indexable** namespace tag the aggregator queries via `#n` (so it can collect every `serverId` in a namespace) |
 | `["epoch", "<n>"]` | the filter epoch (unix seconds) |
 | `["keyed", "0"\|"1"]` | whether the pool is keyed (salted) |
-| `content` | **base64 of the raw tessera-kit `KFLT` blob** |
+| `content` | **base64 of the raw @forgesworn/tessera-kit `KFLT` blob** |
 
 **`parseFilterPublication`** returns `null` (never throws) on any failure, in order:
 (1) bad Nostr event signature (`verifyEvent`); (2) wrong kind; (3) missing/undecodable
-base64 content, or a blob over tessera-kit's 64 MiB cap (the encoded length is
+base64 content, or a blob over @forgesworn/tessera-kit's 64 MiB cap (the encoded length is
 capped **before** decode so an oversized payload can't be expanded into memory);
 (4) bad **in-blob Schnorr** provenance signature (`verifyFilterBlob` — the §10
 invariant); (5) d-tag not in `kindred:members:<ns>:<server>` shape; (6) if
@@ -331,7 +331,7 @@ no expiry and one with `expiresAt: 0` produce **different** digests (`…:nonce:
 ### 6.2 Why a colon in `serverId` is safe here
 
 `serverId` is free-form and MAY contain colons. That is safe — **unlike**
-tessera-kit's capability token, whose canonical string was the **sole** wire carrier
+@forgesworn/tessera-kit's capability token, whose canonical string was the **sole** wire carrier
 (an embedded colon there could shift field boundaries, so it bans colons). Here the
 invite is parsed from a structured **JSON object** and the signature binds the exact
 field **values**; the canonical string is only ever **recomputed from the
@@ -432,11 +432,11 @@ restores annotations (the wire form never carried them).
 | Constant | Value | Where |
 |----------|-------|-------|
 | `KINDRED_BOND_NAMESPACE` | `"kindred:bond"` | `./bond` |
-| `KINDRED_FILTER_KIND` | `30444` (provisional; matches tessera-kit) | `./discovery` |
+| `KINDRED_FILTER_KIND` | `30444` (provisional; matches @forgesworn/tessera-kit) | `./discovery` |
 | `KINDRED_OPTOUT_KIND` | `30445` (provisional) | `./discovery` |
 | bond attestation kind | `31000` (`nostr-attestations` `ATTESTATION_KIND`) | `./bond`, `./invite` |
 | invite canonical prefix | `"kindred-invite:v1:"` | `./invite` |
 | d-tag prefix | `"kindred:members:"` | `./discovery` |
 | handshake / invite blob cap | `8192` bytes | `./handshake`, `./invite` |
-| filter blob cap | `64 MiB` (tessera-kit `KFLT_MAX_BLOB_BYTES`) | `./discovery` |
+| filter blob cap | `64 MiB` (@forgesworn/tessera-kit `KFLT_MAX_BLOB_BYTES`) | `./discovery` |
 | handshake `personas` cap | `16` | `./handshake` |

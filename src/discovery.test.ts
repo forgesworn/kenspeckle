@@ -18,7 +18,7 @@ import {
   verifyFilterBlob,
   parseFilter,
   memberKey,
-} from 'tessera-kit'
+} from '@forgesworn/tessera-kit'
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { base64 } from '@scure/base'
@@ -263,7 +263,7 @@ describe('filter publication — build → sign → parse round-trip', () => {
 
     // The blob round-trips byte-identically and re-verifies.
     expect(bytesToHex(parsed!.blob)).toBe(bytesToHex(blob))
-    expect(verifyFilterBlob(parsed!.blob).valid).toBe(true)
+    expect(verifyFilterBlob(parsed!.blob).ok).toBe(true)
   })
 
   it('emits the canonical d-tag and indexable n-tag matching tessera-kit PROTOCOL.md', () => {
@@ -364,7 +364,7 @@ describe('parseFilterPublication — rejects on any failure (returns null)', () 
     // but the OUTER nostr event is freshly + validly signed over the tampered content.
     const tamperedBlob = new Uint8Array(blob)
     tamperedBlob[140] = tamperedBlob[140]! ^ 0xff
-    expect(verifyFilterBlob(tamperedBlob).valid).toBe(false)
+    expect(verifyFilterBlob(tamperedBlob).ok).toBe(false)
 
     const template = buildFilterPublication({
       namespace: NAMESPACE,

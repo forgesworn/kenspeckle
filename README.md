@@ -1,9 +1,9 @@
-# kindred
+# @forgesworn/kindred
 
 **Verified relationships across three social distances — `kin` (family), `kith` (mutually verified), `ken` (one-way recognised) — with the handshake, bond ceremony, ken trust-store, local presence discovery, and invite flows. Protocol-neutral, pure functions, no storage, no graph traversal.**
 
-[![npm](https://img.shields.io/npm/v/kindred)](https://www.npmjs.com/package/kindred)
-[![licence](https://img.shields.io/npm/l/kindred)](https://github.com/forgesworn/kindred/blob/main/LICENSE)
+[![npm](https://img.shields.io/npm/v/%40forgesworn%2Fkindred)](https://www.npmjs.com/package/%40forgesworn%2Fkindred)
+[![licence](https://img.shields.io/npm/l/%40forgesworn%2Fkindred)](https://github.com/forgesworn/kindred/blob/main/LICENSE)
 ![TypeScript](https://img.shields.io/badge/TypeScript-native-blue)
 ![ESM only](https://img.shields.io/badge/module-ESM--only-informational)
 
@@ -21,7 +21,7 @@ kindred is those primitives as plain data + pure functions. It does **not** stor
 anything, render anything, or traverse a graph (those are explicit non-goals). It
 holds relationships, derives ceremony words, pins and challenges recognised keys,
 and tests a user's own contacts against a server's published presence filter
-(via the sibling [`tessera-kit`](https://github.com/forgesworn/tessera-kit)) —
+(via the sibling [`@forgesworn/tessera-kit`](https://github.com/forgesworn/tessera-kit)) —
 **locally**, never uploading contacts.
 
 > **Honest scope (read [SECURITY.md](./SECURITY.md)):** persona-scoping is a
@@ -34,25 +34,25 @@ and tests a user's own contacts against a server's published presence filter
 ## Install
 
 ```bash
-npm i kindred
+npm i @forgesworn/kindred
 ```
 
 ESM-only, Node ≥ 22. `nostr-tools` is a **peer** dependency (so you and kindred
 share one event type) — install it alongside.
 
-### The `tessera-kit` sibling constraint (read this before publishing)
+### The `@forgesworn/tessera-kit` sibling constraint (read this before publishing)
 
-kindred depends on [`tessera-kit`](https://github.com/forgesworn/tessera-kit), a
+kindred depends on [`@forgesworn/tessera-kit`](https://github.com/forgesworn/tessera-kit), a
 sibling that **is not yet on npm**. For **local development**, build and pack it,
 then install the tarball:
 
 ```bash
-cd ../tessera-kit && npm pack          # produces tessera-kit-0.1.0.tgz
-cd ../kindred && npm install ../tessera-kit/tessera-kit-0.1.0.tgz
+cd ../tessera-kit && npm pack          # produces forgesworn-tessera-kit-0.1.0.tgz
+cd ../kindred && npm install ../tessera-kit/forgesworn-tessera-kit-0.1.0.tgz
 ```
 
 The lockfile then carries a `file:` path to the sibling. **To publish kindred,
-`tessera-kit` must be published to npm first — do NOT ship a `file:` dep.** A
+`@forgesworn/tessera-kit` must be published to npm first — do NOT ship a `file:` dep.** A
 `file:` link in a published package masks unpublished sibling changes and breaks
 external installs (a hard-won signet-app lesson). Publish the sibling, repoint the
 dependency to the npm version, then publish kindred.
@@ -66,8 +66,8 @@ each other short rotating words. The word I *speak* differs from the word I *exp
 (directional — the listener can't parrot it back).
 
 ```typescript
-import { buildHandshakePayload, parseHandshakePayload } from 'kindred/handshake'
-import { deriveBondSecret, bondWords, verifyBondWord } from 'kindred/bond'
+import { buildHandshakePayload, parseHandshakePayload } from '@forgesworn/kindred/handshake'
+import { deriveBondSecret, bondWords, verifyBondWord } from '@forgesworn/kindred/bond'
 
 // (1) I present my persona + a fresh nonce over QR/NFC/relay; they parse it.
 const blob = buildHandshakePayload({ pubkey: myPubHex, nonce: my16ByteHexNonce })
@@ -92,7 +92,7 @@ To bind an in-game account to the real key, issue a **fresh nonce** and verify t
 claimant signs it.
 
 ```typescript
-import { pinKenFromNip05, buildKeyControlChallenge, verifyKeyControl } from 'kindred/ken'
+import { pinKenFromNip05, buildKeyControlChallenge, verifyKeyControl } from '@forgesworn/kindred/ken'
 
 // Pin via NIP-05 — refuses to pin unless the name resolves (TOFU; HTTPS-only fetch).
 const entry = await pinKenFromNip05('mrbeast@example.com', myGamingPersonaPubHex, fetch)
@@ -106,13 +106,13 @@ if (proof.proven) { /* the account in front of me holds the pinned key, live (no
 
 ### discovery — "which of my contacts are here?" (locally)
 
-A server publishes a signed, non-enumerable presence filter (tessera-kit). The
+A server publishes a signed, non-enumerable presence filter (`@forgesworn/tessera-kit`). The
 client parses it, **verifies it against a pinned server key**, then tests its own
 contacts — scoped to one persona.
 
 ```typescript
-import { parseFilter, verifyFilterBlob } from 'tessera-kit'
-import { discoverPresent, parseFilterPublication } from 'kindred/discovery'
+import { parseFilter, verifyFilterBlob } from '@forgesworn/tessera-kit'
+import { discoverPresent, parseFilterPublication } from '@forgesworn/kindred/discovery'
 
 // Pull the kind-30444 publication; verify the Nostr sig + decode (returns null on any failure).
 const pub = parseFilterPublication(rawWireEvent) // pass the RAW event — not a spread-mutated one
@@ -131,7 +131,7 @@ const present = discoverPresent(filter, myEntries, myGamingPersonaPubHex /*, sal
 
 The `.` entry carries the model + local ops; the five ceremonies are **separate
 subpaths** (so a consumer that only needs `./bond` doesn't pull the discovery /
-tessera-kit graph).
+@forgesworn/tessera-kit graph).
 
 ### `.` (model + local ops)
 
@@ -173,7 +173,7 @@ don't authenticate); `resolveKen` (propose-not-flip) / `acceptKenRotation` /
 `disclosureFor({ salt? })` → `DiscoveryDisclosure`; `buildFilterPublication(p)` /
 `parseFilterPublication(event, opts?)` (verifies **both** signatures — returns
 `null`, never throws); `aggregatorQuery(namespace)`; `buildOptOutRequest(p,
-memberPrivHex)`. Re-exports `parseFilter` from tessera-kit. Consts
+memberPrivHex)`. Re-exports `parseFilter` from `@forgesworn/tessera-kit`. Consts
 `KINDRED_FILTER_KIND = 30444`, `KINDRED_OPTOUT_KIND = 30445`.
 
 ### `./invite`
@@ -211,7 +211,7 @@ short version:
 kindred is the relationships brick of the **Forgesworn / Signet** ecosystem. It
 composes:
 
-- [`tessera-kit`](https://github.com/forgesworn/tessera-kit) — the non-enumerable
+- [`@forgesworn/tessera-kit`](https://github.com/forgesworn/tessera-kit) — the non-enumerable
   membership-presence filter `kindred/discovery` is a thin layer over.
 - [`spoken-token`](https://github.com/forgesworn/spoken-token) — the directional
   verification words the bond ceremony speaks.
