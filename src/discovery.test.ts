@@ -439,6 +439,96 @@ describe('parseFilterPublication — rejects on any failure (returns null)', () 
   })
 })
 
+// --- epoch/keyed rollback hardening: the SIGNED blob is authoritative, NOT the event tags ----------
+//
+// The KFLT blob header carries a SIGNED epoch (+ keyed flag), covered by the in-blob Schnorr sig. A
+// malicious republisher can take the server's OLD signed blob (in-blob epoch=5) and wrap it in a NEW
+// event THEY sign, with an `epoch` TAG forged to 9999: `verifyEvent` passes (their key), the in-blob
+// sig is still the real server's (a consumer's pinned-key check would pass), but if the minEpoch
+// rollback guard trusted the FORGED TAG, the stale blob would sail through. The guard MUST compare the
+// blob's SIGNED epoch (5), so the stale blob is rejected. (namespace/serverId still come from the
+// d-tag — they aren't in the blob; unchanged.)
+describe('parseFilterPublication — epoch/keyed read from the SIGNED blob, not the event tags', () => {
+  it('REJECTS a forged-high epoch TAG wrapping an OLD low-epoch signed blob (rollback defense)', () => {
+    const server = freshKeypair()
+    // Real server-signed blob with in-blob epoch = 5 (the authoritative, signed value).
+    const blob = buildSignedBlob([freshKeypair().pk, freshKeypair().pk], server.priv, 5)
+    expect(parseFilter(blob).epoch).toBe(5) // sanity: the SIGNED epoch is genuinely 5
+
+    // A malicious republisher wraps that OLD blob in a NEW event with a FORGED epoch tag of 9999,
+    // signed by THEIR OWN nostr key (verifyEvent will pass — it's their event).
+    const template = buildFilterPublication({
+      namespace: NAMESPACE,
+      serverId: SERVER_ID,
+      blob,
+      keyed: false,
+      epoch: 9999, // FORGED tag — does not match the blob's signed epoch (5)
+    })
+    const forged = fromWire(finalizeEvent(template, generateSecretKey()))
+
+    // The rollback guard must use the blob's SIGNED epoch (5), not the forged tag (9999). With
+    // minEpoch:10, the real epoch 5 <= 10 → REJECTED. Trusting the tag (9999 > 10) would WRONGLY accept.
+    expect(parseFilterPublication(forged, { minEpoch: 10 })).toBeNull()
+  })
+
+  it('defense-in-depth: a forged epoch TAG that DISAGREES with the blob → null even with no minEpoch', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 5)
+    const template = buildFilterPublication({
+      namespace: NAMESPACE,
+      serverId: SERVER_ID,
+      blob,
+      keyed: false,
+      epoch: 9999, // disagrees with the blob's signed epoch (5)
+    })
+    const forged = fromWire(finalizeEvent(template, generateSecretKey()))
+    // Even WITHOUT a minEpoch, a tag/blob epoch disagreement is a tampering signal → reject.
+    expect(parseFilterPublication(forged)).toBeNull()
+  })
+
+  it('defense-in-depth: a forged KEYED tag that DISAGREES with the blob → null', () => {
+    const server = freshKeypair()
+    // Build an OPEN (unkeyed) blob → blob.keyed === false …
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 7)
+    expect(parseFilter(blob).keyed).toBe(false)
+    // … but forge the keyed TAG to '1' (claims keyed). Tag disagrees with the signed flag → reject.
+    const template = buildFilterPublication({
+      namespace: NAMESPACE,
+      serverId: SERVER_ID,
+      blob,
+      keyed: true, // FORGED — blob is actually open
+      epoch: 7,
+    })
+    const forged = fromWire(finalizeEvent(template, generateSecretKey()))
+    expect(parseFilterPublication(forged)).toBeNull()
+  })
+
+  it('uses the SIGNED blob epoch/keyed for the returned FilterPublication (well-formed, agreeing tags)', () => {
+    const server = freshKeypair()
+    // A genuine, keyed publication where the tags AGREE with the signed blob.
+    const blob = buildSignedBlob([freshKeypair().pk, freshKeypair().pk], server.priv, 42, SALT)
+    const pf = parseFilter(blob)
+    expect(pf.epoch).toBe(42)
+    expect(pf.keyed).toBe(true)
+    const template = buildFilterPublication({
+      namespace: NAMESPACE,
+      serverId: SERVER_ID,
+      blob,
+      keyed: true,
+      epoch: 42,
+    })
+    const signed = fromWire(finalizeEvent(template, generateSecretKey()))
+    const parsed = parseFilterPublication(signed)
+    expect(parsed).not.toBeNull()
+    // The returned epoch/keyed are the SIGNED values (which here equal the agreeing tags).
+    expect(parsed!.epoch).toBe(42)
+    expect(parsed!.keyed).toBe(true)
+    // And the rollback guard now compares the SIGNED epoch (42): minEpoch 41 accepts, 42 rejects.
+    expect(parseFilterPublication(signed, { minEpoch: 41 })).not.toBeNull()
+    expect(parseFilterPublication(signed, { minEpoch: 42 })).toBeNull()
+  })
+})
+
 // --- aggregatorQuery + buildOptOutRequest ---------------------------------------------------------
 
 describe('aggregatorQuery', () => {

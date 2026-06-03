@@ -38,7 +38,7 @@
 
 import { bytesToHex, randomBytes } from '@noble/hashes/utils.js'
 import { verifyEvent } from 'nostr-tools/pure'
-import type { NostrEvent, KenEntry, KenProvenance, KenRotation } from './types.js'
+import type { NostrEvent, KenEntry, KenProvenance } from './types.js'
 
 /** Exactly 64 hex chars (case-insensitive; callers lowercase on the way out). */
 const HEX64 = /^[0-9a-f]{64}$/i

@@ -155,6 +155,22 @@ export function buildJoinInvite(p: Omit<JoinInvite, 'v' | 'sig'>, inviterPrivHex
 }
 
 /**
+ * Serialize a `JoinInvite` object to its canonical wire bytes — the symmetry counterpart to
+ * `parseJoinInvite` (which takes bytes). `buildJoinInvite` returns the OBJECT and `parseJoinInvite`
+ * consumes BYTES (the build→object / parse→bytes asymmetry documented above), so a consumer needs an
+ * object→bytes step between them. This is exactly `new TextEncoder().encode(JSON.stringify(invite))`;
+ * exposing it as a named helper means callers (and tests) no longer hand-roll the encode, and the wire
+ * encoding has ONE definition. The transport (QR / URL) carries these bytes; the round-trip is
+ * `build → serialize → parse`.
+ *
+ * @param invite A fully-populated `JoinInvite` (typically straight from `buildJoinInvite`).
+ * @returns UTF-8 JSON bytes ready for the transport.
+ */
+export function serializeJoinInvite(invite: JoinInvite): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(invite))
+}
+
+/**
  * Parse + harden an untrusted invite blob into a typed `JoinInvite`, verifying the inviter's signature
  * and (if present) expiry.
  *

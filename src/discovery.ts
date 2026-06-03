@@ -180,11 +180,25 @@ export interface FilterPublication {
  *   2. the kind is not `KINDRED_FILTER_KIND`;
  *   3. the base64 content is missing/undecodable, or the blob exceeds tessera-kit's 64 MiB cap;
  *   4. the IN-BLOB Schnorr provenance signature is invalid (`verifyFilterBlob`) — the §10 invariant;
- *   5. the d-tag does not carry the `kindred:members:<ns>:<server>` shape;
- *   6. `opts.minEpoch` is set and `epoch <= minEpoch` (monotonicity — replay/rollback defense).
+ *   5. the blob does not re-parse as a MembershipFilter (`parseFilter` throws → tampered header);
+ *   6. the d-tag does not carry the `kindred:members:<ns>:<server>` shape;
+ *   7. the event's `epoch`/`keyed` TAGS are present and DISAGREE with the blob's SIGNED values
+ *      (defense-in-depth tampering signal);
+ *   8. `opts.minEpoch` is set and the blob's SIGNED epoch `<= minEpoch` (monotonicity — rollback
+ *      defense).
  *
- * Returns the namespace/serverId (from the d-tag), epoch + keyed (from their tags), the decoded blob,
- * and the in-blob `signerPubkeyHex` for the consumer's pin check.
+ * EPOCH/KEYED ARE READ FROM THE SIGNED BLOB, NOT THE EVENT TAGS (rollback hardening). The KFLT blob
+ * header carries the epoch + keyed flag COVERED BY THE IN-BLOB SCHNORR SIGNATURE; the event tags are
+ * UNSIGNED-by-the-server (the republisher controls them). A malicious republisher can wrap the
+ * server's OLD signed blob (in-blob epoch=5) in a NEW event they sign, with an `epoch` tag forged to
+ * 9999 — `verifyEvent` passes (their key), the in-blob sig is still the real server's — so trusting
+ * the tag for the `minEpoch` check would let a STALE blob roll back the consumer. We therefore use the
+ * blob's `f.epoch`/`f.keyed` (authoritative) for BOTH the returned `FilterPublication` and the
+ * rollback check, and reject outright if the (optional) tags disagree with the signed values.
+ *
+ * Returns the namespace/serverId (from the d-tag — NOT in the blob, so the tag is authoritative
+ * there), the SIGNED epoch + keyed (from the blob), the decoded blob, and the in-blob
+ * `signerPubkeyHex` for the consumer's pin check.
  */
 export function parseFilterPublication(
   event: NostrEvent,
@@ -212,9 +226,27 @@ export function parseFilterPublication(
   const sigCheck = verifyFilterBlob(blob)
   if (!sigCheck.ok) return null
 
-  // 5. Parse the d-tag → namespace / serverId. Prefix is `kindred:members:`; the namespace is the
+  // 5. Parse the blob with tessera-kit's hardened parser to recover the SIGNED epoch + keyed flag from
+  //    the KFLT header (covered by the in-blob Schnorr sig verified in step 4). These — NOT the event
+  //    tags — are authoritative for the rollback check and the returned value (see the doc note above).
+  //    `parseFilter` validates the header and throws on a malformed/over-cap blob; catch → null to keep
+  //    the never-throws contract. (verifyFilterBlob already passed, so a throw here is unexpected, but
+  //    we stay defensive.)
+  let signedEpoch: number
+  let signedKeyed: boolean
+  try {
+    const f = parseFilter(blob)
+    signedEpoch = f.epoch
+    signedKeyed = f.keyed
+  } catch {
+    return null
+  }
+  if (!Number.isFinite(signedEpoch)) return null
+
+  // 6. Parse the d-tag → namespace / serverId. Prefix is `kindred:members:`; the namespace is the
   //    segment up to the NEXT colon, and the serverId is the rest (so a serverId may itself contain
-  //    colons, e.g. a `wss://host:port/path` URL).
+  //    colons, e.g. a `wss://host:port/path` URL). namespace/serverId are NOT in the blob, so the
+  //    d-tag is authoritative for them — that's correct and unchanged.
   const dTag = event.tags.find((t) => t[0] === 'd')?.[1]
   if (typeof dTag !== 'string' || !dTag.startsWith(D_TAG_PREFIX)) return null
   const rest = dTag.slice(D_TAG_PREFIX.length)
@@ -224,16 +256,29 @@ export function parseFilterPublication(
   const serverId = rest.slice(firstColon + 1)
   if (namespace.length === 0 || serverId.length === 0) return null
 
-  // epoch from the epoch tag; keyed from the keyed tag.
+  // 7. Defense-in-depth: if the (UNSIGNED) event tags are PRESENT and DISAGREE with the blob's SIGNED
+  //    values, treat it as a tampering signal and reject. (A publisher MAY omit the tags entirely —
+  //    the blob is the source of truth — but if they assert them, they must match what the server
+  //    signed.) The epoch tag is compared numerically so '0007' vs 7 is not a false mismatch.
   const epochTag = event.tags.find((t) => t[0] === 'epoch')?.[1]
-  const epoch = epochTag !== undefined ? Number(epochTag) : NaN
-  if (!Number.isFinite(epoch)) return null
-  const keyed = event.tags.find((t) => t[0] === 'keyed')?.[1] === '1'
+  if (epochTag !== undefined) {
+    const taggedEpoch = Number(epochTag)
+    if (!Number.isFinite(taggedEpoch) || taggedEpoch !== signedEpoch) return null
+  }
+  const keyedTag = event.tags.find((t) => t[0] === 'keyed')?.[1]
+  if (keyedTag !== undefined && (keyedTag === '1') !== signedKeyed) return null
 
-  // 6. Epoch monotonicity (replay/rollback defense).
-  if (opts?.minEpoch !== undefined && epoch <= opts.minEpoch) return null
+  // 8. Epoch monotonicity (replay/rollback defense) — against the blob's SIGNED epoch, never the tag.
+  if (opts?.minEpoch !== undefined && signedEpoch <= opts.minEpoch) return null
 
-  return { namespace, serverId, blob, keyed, epoch, signerPubkeyHex: sigCheck.signerPubkeyHex }
+  return {
+    namespace,
+    serverId,
+    blob,
+    keyed: signedKeyed,
+    epoch: signedEpoch,
+    signerPubkeyHex: sigCheck.signerPubkeyHex,
+  }
 }
 
 /** Relay filter an aggregator uses to collect every server's publication for one namespace, across

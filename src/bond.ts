@@ -152,6 +152,15 @@ export function bondWords(
   counter: number,
   opts?: BondWordsOpts,
 ): { mine: string; theirs: string } {
+  // Guard the secret shape at the kindred boundary: `secretHex` must be the 64-hex value
+  // `deriveBondSecret` emits. Without this, an odd-length / non-hex secret reaches
+  // `deriveDirectionalPair` and leaks a raw `hexToBytes: odd-length hex string` (spoken-token/@noble)
+  // — an opaque error with no kindred context. Match `deriveBondSecret`'s own error surface. This also
+  // covers `verifyBondWord` (it derives via `bondWords`); a malformed secret is a programmer error,
+  // distinct from the fail-soft tolerance/counter clamps which never throw on a VALID-shaped call.
+  if (typeof secretHex !== 'string' || !/^[0-9a-f]{64}$/i.test(secretHex)) {
+    throw new Error('bondWords: secret must be 64 hex chars')
+  }
   const a = aPubHex.toLowerCase(),
     b = bPubHex.toLowerCase()
   const namespace = opts?.namespace ?? KINDRED_BOND_NAMESPACE

@@ -24,7 +24,7 @@ import { schnorr } from '@noble/curves/secp256k1.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure'
 import { buildBondAttestation } from './bond.js'
-import { buildJoinInvite, parseJoinInvite, verifyBondAttestation } from './invite.js'
+import { buildJoinInvite, parseJoinInvite, serializeJoinInvite, verifyBondAttestation } from './invite.js'
 import type { JoinInvite, NostrEvent } from './types.js'
 
 // --- Fixtures -------------------------------------------------------------------------------------
@@ -44,9 +44,11 @@ function freshInviter(): { privHex: string; pubHex: string } {
 
 /** Serialize a JoinInvite object to wire bytes the way a consumer would (build→object, then encode).
  *  `buildJoinInvite` returns the OBJECT; the transport (QR/URL) carries the JSON; `parseJoinInvite`
- *  takes bytes — so the test does the object→bytes encode itself. */
+ *  takes bytes. `serializeJoinInvite` is the kit-provided symmetry helper (the consumer no longer
+ *  hand-rolls `TextEncoder().encode(JSON.stringify(...))`); the round-trip is build → serialize →
+ *  parse. */
 function toWireBytes(invite: JoinInvite): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify(invite))
+  return serializeJoinInvite(invite)
 }
 
 /** Build a real, signed kind-31000 kindred-bond attestation over `subjectPubHex`, signed by `sk`. */
@@ -66,6 +68,29 @@ function tamperedFromWire(ev: NostrEvent, mutate: (e: Record<string, unknown>) =
 }
 
 // --- JoinInvite: build → serialize → parse round-trip ---------------------------------------------
+
+describe('serializeJoinInvite — the build/parse symmetry helper', () => {
+  it('produces exactly `TextEncoder().encode(JSON.stringify(invite))` (canonical wire bytes)', () => {
+    const { privHex, pubHex } = freshInviter()
+    const invite = buildJoinInvite(
+      { namespace: NAMESPACE, serverId: SERVER_ID, inviterPubkey: pubHex, nonce: NONCE },
+      privHex,
+    )
+    const expected = new TextEncoder().encode(JSON.stringify(invite))
+    expect(serializeJoinInvite(invite)).toEqual(expected)
+  })
+
+  it('build → serialize → parse round-trips deep-equal (symmetry: no hand-rolled encode needed)', () => {
+    const { privHex, pubHex } = freshInviter()
+    const expiresAt = Math.floor(Date.now() / 1000) + 3600
+    const invite = buildJoinInvite(
+      { namespace: NAMESPACE, serverId: COLON_SERVER_ID, inviterPubkey: pubHex, nonce: NONCE, expiresAt },
+      privHex,
+    )
+    const parsed = parseJoinInvite(serializeJoinInvite(invite), expiresAt - 1)
+    expect(parsed).toEqual(invite)
+  })
+})
 
 describe('buildJoinInvite / parseJoinInvite — signed invite round-trip', () => {
   it('round-trips: build → wire bytes → parse deep-equals the invite and the sig verifies', () => {

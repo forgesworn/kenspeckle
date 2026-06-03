@@ -34,12 +34,12 @@ import { discoverPresent, parseFilterPublication } from '@forgesworn/kindred/dis
 // kith: derive the byte-exact shared secret, read directional words for a counter.
 const secret = deriveBondSecret(myPrivHex, theirPubHex)
 const { mine } = bondWords(secret, myPubHex, theirPubHex, counter)
-const ok = verifyBondWord(secret, myPubHex, theirPubHex, counter, whatTheySaid)
+const { ok } = verifyBondWord(secret, myPubHex, theirPubHex, counter, whatTheySaid) // → { ok }
 
 // ken: pin (TOFU), then prove LIVE control with a fresh nonce (attribution alone is replayable).
 const entry = await pinKenFromNip05('mrbeast@example.com', myPersonaPubHex, fetch)
 const { nonce } = buildKeyControlChallenge()
-const proof = verifyKeyControl(entry, nonce, signedByClaimant)
+const { ok, reason } = verifyKeyControl(entry, nonce, signedByClaimant) // → { ok, reason? }
 
 // discovery: pin-verify the publication, then test MY contacts scoped to one persona.
 const pub = parseFilterPublication(rawWireEvent)        // raw event, never spread-mutated

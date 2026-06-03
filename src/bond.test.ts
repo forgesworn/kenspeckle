@@ -98,6 +98,26 @@ describe('bondWords — directional spoken-token pair', () => {
     expect(c0.mine).not.toBe(c1.mine)
   })
 
+  it('rejects a malformed secretHex with a KIT-shaped error (not a raw spoken-token / @noble error)', () => {
+    // `secretHex` must be the 64-hex shape `deriveBondSecret` emits. Without the guard, an odd-length
+    // or non-hex secret leaks `deriveDirectionalPair`'s raw `hexToBytes: odd-length hex string` (or
+    // similar) from inside spoken-token/@noble — an opaque error at the kindred boundary. The guard
+    // surfaces a consistent `bondWords:` error instead. (verifyBondWord calls bondWords, so it's
+    // covered transitively.)
+    const ODD = 'abc' // odd-length hex → would raise the raw hexToBytes error
+    const NONHEX = 'z'.repeat(64) // 64 chars but not hex
+    const SHORT = 'ab'.repeat(8) // valid hex but only 16 bytes (not the 64-hex secret shape)
+    for (const bad of [ODD, NONHEX, SHORT, '']) {
+      expect(() => bondWords(bad, PUB_A, PUB_B, 0)).toThrow('bondWords: secret must be 64 hex chars')
+    }
+    // And it must NOT leak the raw spoken-token/@noble message.
+    expect(() => bondWords(ODD, PUB_A, PUB_B, 0)).not.toThrow(/hexToBytes|odd-length/)
+    // verifyBondWord routes through bondWords, so the same guard fires there.
+    expect(() => verifyBondWord(ODD, PUB_A, PUB_B, 0, 'whatever')).toThrow(
+      'bondWords: secret must be 64 hex chars',
+    )
+  })
+
   it('is order-independent in the underlying sort (caller may pass pubkeys in any order)', () => {
     // Sorting [a,b] inside bondWords means the SECRET-derived pair is keyed by lo/hi regardless of
     // the arg order; the caller's own pubkey just selects which role is "mine".
