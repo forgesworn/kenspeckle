@@ -46,6 +46,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "vectors:check": "node ./scripts/check-vectors.mjs",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
