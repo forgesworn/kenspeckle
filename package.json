@@ -82,7 +82,7 @@
     "@types/node": "^22",
     "nostr-tools": "^2.0.0",
     "typescript": "^6.0.2",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.9"
   },
   "publishConfig": {
     "provenance": true
