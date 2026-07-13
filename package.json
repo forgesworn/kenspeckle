@@ -72,7 +72,7 @@
     "@noble/curves": "^2.0.1",
     "@noble/hashes": "^2.0.1",
     "nostr-attestations": "^2.5.5",
-    "spoken-token": "^2.0.4"
+    "spoken-token": "^2.1.0"
   },
   "peerDependencies": {
     "nostr-tools": "^2.23.9"
