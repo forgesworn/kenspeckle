@@ -29,6 +29,10 @@
     "./invite": {
       "types": "./dist/invite.d.ts",
       "default": "./dist/invite.js"
+    },
+    "./companion-rail": {
+      "types": "./dist/companion-rail.d.ts",
+      "default": "./dist/companion-rail.js"
     }
   },
   "files": [

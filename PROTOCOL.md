@@ -498,7 +498,20 @@ restores annotations (the wire form never carried them).
 
 ---
 
-## 10. Constants summary
+## 10. Companion data rail (`./companion-rail`)
+
+The companion rail is a pure producer/consumer wire contract. A companion
+builds `signet-grant://pair?...`; Signet parses it and returns an encrypted
+kind-21237 acknowledgement; Signet then publishes encrypted kind-30078
+replaceable snapshots under `d=signet:companion-rail`. The shared reducer
+accepts only a strictly newer `publishedAt`; malformed and stale envelopes
+return the exact input state, while a newer `revoked:true` tombstone clears
+contacts and pairing state.
+
+Kindred does not open relays, schedule timers, store keys, encrypt content or
+render grant UI. Those are application lifecycle and policy concerns.
+
+## 11. Constants summary
 
 | Constant | Value | Where |
 |----------|-------|-------|
@@ -511,3 +524,6 @@ restores annotations (the wire form never carried them).
 | handshake / invite blob cap | `8192` bytes | `./handshake`, `./invite` |
 | filter blob cap | `64 MiB` (@forgesworn/tessera-kit `KFLT_MAX_BLOB_BYTES`) | `./discovery` |
 | handshake `personas` cap | `16` | `./handshake` |
+| companion ack kind | `21237` | `./companion-rail` |
+| companion snapshot kind | `30078` | `./companion-rail` |
+| companion snapshot d-tag | `"signet:companion-rail"` | `./companion-rail` |

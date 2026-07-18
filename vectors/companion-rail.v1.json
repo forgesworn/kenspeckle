@@ -1,0 +1,49 @@
+{
+  "description": "Fledgling pairing request consumed by Signet, followed by Signet ack and monotonic snapshot/revocation transitions",
+  "producer": "fledgling",
+  "consumer": "signet-app",
+  "nowSec": 1700000000,
+  "pairing": {
+    "options": {
+      "appPubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "appName": "Fledgling",
+      "scope": "kith,kin",
+      "relay": "wss://relay.example.com",
+      "nowSec": 1700000000,
+      "challenge": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+    },
+    "uri": "signet-grant://pair?app=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&name=Fledgling&scope=kith%2Ckin&relay=wss%3A%2F%2Frelay.example.com&t=1700000000&challenge=DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+    "parsed": {
+      "appPubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "appName": "Fledgling",
+      "tiers": ["kith", "kin"],
+      "rendezvousRelay": "wss://relay.example.com",
+      "t": 1700000000,
+      "challenge": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+    }
+  },
+  "ack": {
+    "plaintext": "{\"v\":1,\"railPubkey\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"dTag\":\"signet:companion-rail\",\"snapshotRelay\":\"wss://relay.example.com\",\"grantedScope\":{\"tiers\":[\"kin\"],\"personas\":\"all\"},\"challenge\":\"DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD\"}",
+    "malformedPlaintext": "{\"v\":1,\"railPubkey\":\"short\",\"snapshotRelay\":\"wss://relay.example.com\",\"grantedScope\":{\"tiers\":[\"kin\"],\"personas\":\"all\"},\"challenge\":\"DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD\"}"
+  },
+  "snapshots": {
+    "initial": {
+      "contacts": [],
+      "lastPublishedAt": 100,
+      "revoked": false
+    },
+    "freshEnvelope": "{\"v\":1,\"scope\":{\"tiers\":[\"kin\"],\"personas\":\"all\"},\"contacts\":[{\"pubkey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ownerPubkey\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"tier\":\"kin\",\"addedAt\":50,\"relationship\":\"child\"}],\"publishedAt\":101}",
+    "staleEnvelope": "{\"v\":1,\"scope\":{\"tiers\":[\"kin\"],\"personas\":\"all\"},\"contacts\":[],\"publishedAt\":100}",
+    "revokedEnvelope": "{\"v\":1,\"scope\":{\"tiers\":[\"kin\"],\"personas\":\"all\"},\"contacts\":[],\"publishedAt\":102,\"revoked\":true}",
+    "freshExpected": {
+      "lastPublishedAt": 101,
+      "revoked": false,
+      "contactCount": 1
+    },
+    "revokedExpected": {
+      "lastPublishedAt": 102,
+      "revoked": true,
+      "contactCount": 0
+    }
+  }
+}

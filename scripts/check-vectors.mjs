@@ -25,6 +25,13 @@ import { schnorr } from '@noble/curves/secp256k1.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 
 import { deriveBondSecret } from '../dist/bond.js'
+import {
+  applyCompanionSnapshot,
+  buildPairingAck,
+  buildPairingUri,
+  parsePairingAck,
+  parsePairingRequest,
+} from '../dist/companion-rail.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -43,7 +50,7 @@ if (files.length === 0) {
 const failures = []
 let assertionCount = 0
 
-for (const fileName of files) {
+for (const fileName of files.filter((name) => name.startsWith('bond.ecdh.'))) {
   const fullPath = path.join(vectorsDir, fileName)
   let vector
   try {
@@ -122,6 +129,75 @@ for (const fileName of files) {
   }
 }
 
+for (const fileName of files.filter((name) => name.startsWith('companion-rail.'))) {
+  const fullPath = path.join(vectorsDir, fileName)
+  let vector
+  try {
+    vector = JSON.parse(readFileSync(fullPath, 'utf8'))
+  } catch (error) {
+    failures.push({ fileName, message: `Failed to parse JSON: ${String(error)}` })
+    continue
+  }
+
+  if (!vector?.pairing?.options || !vector?.pairing?.uri || !vector?.ack?.plaintext || !vector?.snapshots) {
+    failures.push({ fileName, message: 'Missing companion pairing, ack or snapshots fixture' })
+    continue
+  }
+
+  assertionCount++
+  try {
+    const uri = buildPairingUri(vector.pairing.options)
+    if (uri !== vector.pairing.uri) {
+      failures.push({ fileName, message: `pairing URI drifted.\n  expected: ${vector.pairing.uri}\n  actual:   ${uri}` })
+    }
+  } catch (error) {
+    failures.push({ fileName, message: `buildPairingUri threw: ${String(error)}` })
+  }
+
+  assertionCount++
+  const request = parsePairingRequest(vector.pairing.uri, { nowSec: vector.nowSec })
+  if (JSON.stringify(request.request) !== JSON.stringify(vector.pairing.parsed) || request.warnings.length !== 0) {
+    failures.push({ fileName, message: 'Signet-side pairing request parse drifted' })
+  }
+
+  assertionCount++
+  const ack = parsePairingAck(vector.ack.plaintext, vector.pairing.options.challenge)
+  if (!ack || buildPairingAck(ack) !== vector.ack.plaintext) {
+    failures.push({ fileName, message: 'pairing ack parse/build drifted' })
+  }
+
+  assertionCount++
+  if (parsePairingAck(vector.ack.malformedPlaintext, vector.pairing.options.challenge) !== null) {
+    failures.push({ fileName, message: 'malformed pairing ack no longer fails closed' })
+  }
+
+  const initial = vector.snapshots.initial
+  assertionCount++
+  const fresh = applyCompanionSnapshot(initial, vector.snapshots.freshEnvelope)
+  if (
+    fresh.lastPublishedAt !== vector.snapshots.freshExpected.lastPublishedAt ||
+    fresh.revoked !== vector.snapshots.freshExpected.revoked ||
+    fresh.contacts.length !== vector.snapshots.freshExpected.contactCount
+  ) {
+    failures.push({ fileName, message: 'fresh snapshot transition drifted' })
+  }
+
+  assertionCount++
+  if (applyCompanionSnapshot(initial, vector.snapshots.staleEnvelope) !== initial) {
+    failures.push({ fileName, message: 'stale snapshot no longer returns the exact input state' })
+  }
+
+  assertionCount++
+  const revoked = applyCompanionSnapshot(fresh, vector.snapshots.revokedEnvelope)
+  if (
+    revoked.lastPublishedAt !== vector.snapshots.revokedExpected.lastPublishedAt ||
+    revoked.revoked !== vector.snapshots.revokedExpected.revoked ||
+    revoked.contacts.length !== vector.snapshots.revokedExpected.contactCount
+  ) {
+    failures.push({ fileName, message: 'revocation transition drifted' })
+  }
+}
+
 if (failures.length > 0) {
   console.error('[vectors] Frozen golden-vector check FAILED.')
   for (const failure of failures) {
@@ -129,8 +205,7 @@ if (failures.length > 0) {
   }
   console.error(
     '[vectors] If this change is intentional, regenerate the golden vector against the new code and ' +
-      'add a CHANGELOG note — a silent change to the bond ECDH construction breaks every contact ' +
-      'migrated from signet-protocol (different secret → different spoken words → broken verification).',
+      'add a CHANGELOG note — silent bond or companion-rail wire drift breaks existing consumers.',
   )
   process.exit(1)
 }
