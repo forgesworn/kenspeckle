@@ -36,6 +36,12 @@ layered over `@forgesworn/tessera-kit`.
   kindred owns the relationship layer and the Nostr **kinds**.
 - **Join invites** (`./invite`) — a custom-payload Schnorr-signed invite plus
   single-attestation verification.
+- **Companion data rail** (`./companion-rail`) — the shared Signet/Fledgling
+  pairing URI, ack, wire constants and monotonic snapshot reducer. It is pure
+  protocol code: apps retain relay I/O, timers, storage, encryption and UI.
+- **Frozen companion rail vector** (`vectors/companion-rail.v1.json`) covering
+  the Fledgling request, Signet ack, malformed ack, fresh/stale snapshot and
+  revocation transition in addition to the existing bond vector.
 - **Frozen golden vector** (`vectors/bond.ecdh.v1.json`) + strict checker
   (`npm run vectors:check`): the byte-exact cross-implementation /
   future-Rust-port / signet-protocol-migration contract for `deriveBondSecret`. It

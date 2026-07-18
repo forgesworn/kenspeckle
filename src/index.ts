@@ -6,7 +6,8 @@
 //   • the local relationship ops — scope, search, private-link, canonical serialize/parse (`./model.js`);
 //   • the encrypted self-backup export/import (`./backup.js`).
 //
-// The five conceptual subpaths — `./handshake`, `./bond`, `./ken`, `./discovery`, `./invite` — are
+// The protocol subpaths — `./handshake`, `./bond`, `./ken`, `./discovery`, `./invite`, and
+// `./companion-rail` — are
 // DELIBERATELY NOT re-exported here. Each is imported via its own subpath
 // (`import { deriveBondSecret } from 'kindred/bond'`) so a consumer that only needs, say, the bond
 // ceremony does not pull the discovery/tessera-kit graph. Keeping them off the `.` barrel is the

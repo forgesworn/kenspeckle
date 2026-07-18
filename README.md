@@ -136,7 +136,7 @@ const present = discoverPresent(filter, myEntries, myGamingPersonaPubHex /*, sal
 
 ## API by subpath
 
-The `.` entry carries the model + local ops; the five ceremonies are **separate
+The `.` entry carries the model + local ops; the protocol ceremonies are **separate
 subpaths** (so a consumer that only needs `./bond` doesn't pull the discovery /
 @forgesworn/tessera-kit graph).
 
@@ -152,6 +152,15 @@ subpaths** (so a consumer that only needs `./bond` doesn't pull the discovery /
 | `linkForRecall(entries, ids)` / `unlink(entries, pubkey)` | private "these pubkeys are one human" grouping (mutates in place) |
 | `toWire(e)` / `serializeEntry(e)` / `parseEntry(s)` | wire view + **byte-stable** canonical JSON (annotations **excluded**) + hardened parse |
 | `exportEntriesEncrypted(entries, key)` / `importEntries(blob, key)` | XChaCha20-Poly1305 self-backup — **includes** annotations (the user's own sealed copy, not a graph disclosure) |
+
+### `./companion-rail`
+
+Pure wire ownership shared by Signet producers and companion consumers:
+`buildPairingUri` / `parsePairingRequest`, `buildPairingAck` /
+`parsePairingAck`, `applyCompanionSnapshot`, the pairing/snapshot types, and
+the frozen `ACK_KIND`, `SNAPSHOT_KIND`, and `SNAPSHOT_D_TAG` constants. Relay
+subscriptions, encryption, device keys, clocks, storage, retry policy and UI
+remain in the consuming app.
 
 ### `./handshake`
 
