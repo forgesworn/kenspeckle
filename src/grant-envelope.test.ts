@@ -74,4 +74,15 @@ describe('grant envelope round-trip', () => {
   it('returns null when scope.tiers has an unknown token', () => {
     expect(parseGrantEnvelope(JSON.stringify({ v: 1, scope: { tiers: ['nope'], personas: 'all' }, contacts: [], publishedAt: 1 }))).toBeNull()
   })
+  it('strips unknown kin relationship but keeps contact (forward-compat)', () => {
+    const raw = JSON.stringify({
+      v: 1, scope, publishedAt: 1,
+      contacts: [
+        { pubkey: 'a'.repeat(64), ownerPubkey: 'b'.repeat(64), tier: 'kin', addedAt: 1, relationship: 'boss' },
+      ],
+    })
+    const parsed = parseGrantEnvelope(raw)
+    expect(parsed?.contacts).toHaveLength(1)
+    expect(parsed?.contacts[0].relationship).toBeUndefined()
+  })
 })
