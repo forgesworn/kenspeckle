@@ -31,3 +31,12 @@ export {
 // Encrypted self-backup (spec §6.7, §12.1). INCLUDES private annotations — it is the user's own
 // sealed copy, not a graph disclosure.
 export { exportEntriesEncrypted, importEntries } from './backup.js'
+
+// Companion data rail envelope (model-level projection + serialize/parse,
+// same surface class as toWire/serializeEntry/parseEntry).
+export {
+  toGrantView,
+  buildGrantEnvelope,
+  parseGrantEnvelope,
+} from './grant-envelope.js'
+export type { GrantContactView, GrantScope, GrantEnvelope } from './grant-envelope.js'
