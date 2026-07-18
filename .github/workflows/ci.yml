@@ -13,17 +13,33 @@ jobs:
       matrix:
         node-version: [22]
     steps:
+      # persist-credentials: false — otherwise checkout injects the workflow
+      # GITHUB_TOKEN as an http.https://github.com/.extraheader that overrides
+      # the FORGESWORN_READ_PAT insteadOf rewrite below, and npm ci 404s on the
+      # private @forgesworn/tessera-kit dependency (GITHUB_TOKEN can't see other repos).
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
-      # @forgesworn/tessera-kit is a private git+https dependency. Rewrite
-      # github.com HTTPS clones to inject a read-only PAT so `npm ci` can
-      # resolve it. Requires repo secret FORGESWORN_READ_PAT (fine-grained
-      # PAT with read access to forgesworn/tessera-kit).
+      # @forgesworn/tessera-kit is a private git+https dependency. npm normalises
+      # git+https github.com URLs to ssh://git@github.com/, so all three URL forms
+      # must be rewritten to inject a read-only PAT over HTTPS — rewriting only the
+      # https:// form leaves npm's normalised ssh:// form unauthenticated.
+      # Requires repo secret FORGESWORN_READ_PAT (fine-grained, read on
+      # forgesworn/tessera-kit).
       - name: Authenticate git for private @forgesworn deps
-        run: git config --global url."https://x-access-token:${{ secrets.FORGESWORN_READ_PAT }}@github.com/".insteadOf "https://github.com/"
+        # PAT via env, not inline ${{ }} interpolation, so the secret never lands
+        # in the rendered command line / shell trace.
+        env:
+          FORGESWORN_READ_PAT: ${{ secrets.FORGESWORN_READ_PAT }}
+        run: |
+          AUTH="https://x-access-token:${FORGESWORN_READ_PAT}@github.com/"
+          git config --global url."$AUTH".insteadOf "https://github.com/"
+          git config --global --add url."$AUTH".insteadOf "ssh://git@github.com/"
+          git config --global --add url."$AUTH".insteadOf "git@github.com:"
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
