@@ -26,11 +26,18 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 
 import { deriveBondSecret } from '../dist/bond.js'
 import {
+  RETURN_ADDITIONS_CAP,
+  RETURN_CORROBORATIONS_CAP,
+  RETURN_D_TAG,
+  RETURN_LOCATOR_MAX,
   applyCompanionSnapshot,
   buildPairingAck,
   buildPairingUri,
+  buildReturnEnvelope,
+  landReturnedKen,
   parsePairingAck,
   parsePairingRequest,
+  parseReturnEnvelope,
 } from '../dist/companion-rail.js'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -195,6 +202,95 @@ for (const fileName of files.filter((name) => name.startsWith('companion-rail.')
     revoked.contacts.length !== vector.snapshots.revokedExpected.contactCount
   ) {
     failures.push({ fileName, message: 'revocation transition drifted' })
+  }
+}
+
+// Companion RETURN rail (design §10). Frozen for the same reason as the forward rail: these are
+// byte-level decisions two independently-built apps must agree on. The `landReturnedKen` locator
+// grammar is the load-bearing one — `companion:<appName>:<locator>` with `:`/`%` escaped is what
+// keeps a relayed CLAIM structurally distinguishable from a first-party confirmation. Drift there
+// is a security regression, not a cosmetic one, so it must fail the build.
+for (const fileName of files.filter((name) => name.startsWith('companion-return.'))) {
+  const fullPath = path.join(vectorsDir, fileName)
+  let vector
+  try {
+    vector = JSON.parse(readFileSync(fullPath, 'utf8'))
+  } catch (error) {
+    failures.push({ fileName, message: `Failed to parse JSON: ${String(error)}` })
+    continue
+  }
+
+  if (!vector?.envelope?.json || !vector?.landed || !vector?.constants) {
+    failures.push({ fileName, message: 'Missing return envelope, landed entry or constants fixture' })
+    continue
+  }
+
+  assertionCount++
+  if (
+    RETURN_D_TAG !== vector.constants.dTag ||
+    RETURN_ADDITIONS_CAP !== vector.constants.additionsCap ||
+    RETURN_CORROBORATIONS_CAP !== vector.constants.corroborationsCap ||
+    RETURN_LOCATOR_MAX !== vector.constants.locatorMax
+  ) {
+    failures.push({ fileName, message: 'return rail constants drifted' })
+  }
+
+  assertionCount++
+  try {
+    const json = buildReturnEnvelope(vector.envelope.additions)
+    if (json !== vector.envelope.json) {
+      failures.push({
+        fileName,
+        message: `return envelope bytes drifted.\n  expected: ${vector.envelope.json}\n  actual:   ${json}`,
+      })
+    }
+  } catch (error) {
+    failures.push({ fileName, message: `buildReturnEnvelope threw: ${String(error)}` })
+  }
+
+  assertionCount++
+  if (JSON.stringify(parseReturnEnvelope(vector.envelope.json)) !== JSON.stringify(vector.envelope.parsed)) {
+    failures.push({ fileName, message: 'return envelope parse drifted' })
+  }
+
+  assertionCount++
+  for (const malformed of vector.malformedEnvelopes ?? []) {
+    if (parseReturnEnvelope(malformed) !== null) {
+      failures.push({ fileName, message: `malformed return envelope no longer fails closed: ${malformed}` })
+    }
+  }
+
+  // The landing projection: primary provenance, namespaced corroborations, clamped timestamps.
+  assertionCount++
+  const landed = landReturnedKen(vector.envelope.additions[0], {
+    appName: vector.appName,
+    ownerPubkeyHex: vector.ownerPubkey,
+    nowSec: vector.nowSec,
+  })
+  if (JSON.stringify(landed) !== JSON.stringify(vector.landed)) {
+    failures.push({
+      fileName,
+      message:
+        'landReturnedKen projection drifted (primary provenance, locator namespacing or clamping changed).\n' +
+        `  expected: ${JSON.stringify(vector.landed)}\n  actual:   ${JSON.stringify(landed)}`,
+    })
+  }
+
+  // The namespace-forgery defence: a `:` in appName must be escaped, or a hostile app can emit a
+  // locator byte-identical to another app's.
+  assertionCount++
+  const spoof = landReturnedKen(vector.spoof.input, {
+    appName: vector.spoof.appName,
+    ownerPubkeyHex: vector.ownerPubkey,
+    nowSec: vector.nowSec,
+  })
+  if (JSON.stringify(spoof) !== JSON.stringify(vector.spoof.landed)) {
+    failures.push({
+      fileName,
+      message:
+        'appName namespace escaping drifted — a companion app may be able to forge another app\'s locator.\n' +
+        `  expected: ${JSON.stringify(vector.spoof.landed)}\n  actual:   ${JSON.stringify(spoof)}`,
+    })
   }
 }
 

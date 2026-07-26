@@ -63,6 +63,24 @@ const present = discoverPresent(parseFilter(pub.blob), myEntries, myPersonaPubHe
   artifact, don't authenticate a party).
 - **NIP-05 = TOFU** — a DNS/TLS/HTTP trust-on-first-use anchor, NOT key-continuity;
   key changes are propose-only, never auto-flipped.
+- **Corroboration** — `KenEntry.corroborations?` holds ADDITIONAL independent
+  confirmations; `provenance` stays required + singular (so the field is purely
+  additive and an entry without it serialises byte-identically). The
+  `KenProvenance['source']` union is FROZEN: `validateProvenance` throws on an
+  unknown source, so adding a value would make an older validator reject the WHOLE
+  entry. Optional fields are safe; new enum values are not.
+  `summarizeKenProvenance` returns FACTS (counts + timestamps), never a trust
+  score — weighting channels is consumer policy, and a scalar would invite being
+  used as an authorization input. It also returns `claimed`: how many records are
+  RELAYED companion claims (reserved `companion:` locator prefix) rather than
+  first-hand checks. Render `confirmations - claimed`, or you show claims as
+  verification.
+- **Consumer rule** — no app but signet-app is a source of identity truth. A
+  consumer MAY hold domain relationships (who is in this community); it MUST NOT
+  hold identity verification. Structural, not policy: `GrantContactView` is
+  secret-stripped at the type level and a companion holds no identity keys, so it
+  cannot mint kith/kin — only propose a ken, with its provenance as a CLAIM that
+  `landReturnedKen` files as a namespaced corroboration, never as the primary.
 - **Private annotations** — local recall aids (`groupId`/`label`/`note`/`blocked`),
   searchable in memory, NEVER serialised onto a wire (type-level + runtime); INCLUDED
   in the user's own encrypted self-backup (allowed — not a graph disclosure).
@@ -81,7 +99,12 @@ const present = discoverPresent(parseFilter(pub.blob), myEntries, myPersonaPubHe
   `retractBondAssertion`, `KINDRED_BOND_NAMESPACE`.
 - `./ken` — `pinKen`, `pinKenFromNip05`, `buildKeyControlChallenge`,
   `verifyKeyControl`, `attributeSignature`, `resolveKen`, `acceptKenRotation`,
-  `revokeKen`, `dropKen`.
+  `revokeKen`, `dropKen`, `addCorroboration`, `summarizeKenProvenance`.
+- `./companion-rail` — `buildPairingUri`/`parsePairingRequest`,
+  `buildPairingAck`/`parsePairingAck`, `applyCompanionSnapshot`; return rail
+  `WireKen`, `buildReturnEnvelope`/`parseReturnEnvelope`, `landReturnedKen`;
+  `ACK_KIND`, `SNAPSHOT_KIND`, `SNAPSHOT_D_TAG`, `RETURN_D_TAG`,
+  `RETURN_ADDITIONS_CAP`, `RETURN_CORROBORATIONS_CAP`.
 - `./discovery` — `discoverPresent`, `disclosureFor`, `buildFilterPublication`,
   `parseFilterPublication`, `aggregatorQuery`, `buildOptOutRequest`, `parseFilter`
   (re-export); `KINDRED_FILTER_KIND`, `KINDRED_OPTOUT_KIND`.

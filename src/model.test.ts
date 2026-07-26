@@ -10,6 +10,7 @@ import {
   parseEntry,
 } from './model.js'
 import type { KindredEntry, KinEntry, KithEntry, KenEntry } from './types.js'
+import { MAX_CORROBORATIONS } from './validate.js'
 
 const A = 'a'.repeat(64)
 const B = 'b'.repeat(64)
@@ -392,5 +393,154 @@ describe('parseEntry', () => {
     } else {
       throw new Error('expected ken tier')
     }
+  })
+})
+
+// --- corroborated provenance (additive, MUST NOT break anything) --------------------------------
+//
+// `corroborations` lets "verified in person AND matches their domain" be expressed instead of
+// keeping one source and discarding the rest. The load-bearing property is that it is ADDITIVE:
+// every entry that existed before this field must serialise to the exact same bytes as before.
+
+describe('ken corroborations — the NON-BREAKING guarantee', () => {
+  // These two strings were captured from the code BEFORE `corroborations` existed, by running
+  // `serializeEntry` against the then-current dist/ build. They are frozen on purpose: if adding a
+  // field ever perturbs the bytes of an entry that does NOT use it, existing stored entries and
+  // existing frozen vectors would silently drift and this test fails loudly instead.
+  const FROZEN_MINIMAL =
+    '{"addedAt":1750000000,"ownerPubkey":"' + 'b'.repeat(64) + '","provenance":{"confirmedAt":1749000000,' +
+    '"locator":"companion:murmurate","source":"manual"},"pubkey":"' + 'a'.repeat(64) + '","tier":"ken"}'
+
+  const FROZEN_FULL =
+    '{"addedAt":1750000000,"displayName":"Wren","lastResolvedAt":1750000100,"nip05":"wren@example.org",' +
+    '"ownerPubkey":"' + 'b'.repeat(64) + '","previousPubkeys":["' + 'c'.repeat(64) + '"],' +
+    '"provenance":{"confirmedAt":1749000000,"locator":"peat-bog-collective/march-gathering","source":"in-person"},' +
+    '"pubkey":"' + 'a'.repeat(64) + '","revoked":false,"rotation":{"accepted":false,"newPubkey":"' + 'd'.repeat(64) +
+    '","observedAt":1750000200,"via":"nip05"},"tier":"ken"}'
+
+  const minimalKen: KenEntry = {
+    tier: 'ken',
+    pubkey: 'a'.repeat(64),
+    ownerPubkey: 'b'.repeat(64),
+    addedAt: 1750000000,
+    provenance: { source: 'manual', locator: 'companion:murmurate', confirmedAt: 1749000000 },
+  }
+
+  const fullKen: KenEntry = {
+    tier: 'ken',
+    pubkey: 'a'.repeat(64),
+    ownerPubkey: 'b'.repeat(64),
+    addedAt: 1750000000,
+    displayName: 'Wren',
+    provenance: { source: 'in-person', locator: 'peat-bog-collective/march-gathering', confirmedAt: 1749000000 },
+    nip05: 'wren@example.org',
+    lastResolvedAt: 1750000100,
+    previousPubkeys: ['c'.repeat(64)],
+    rotation: { newPubkey: 'd'.repeat(64), observedAt: 1750000200, via: 'nip05', accepted: false },
+    revoked: false,
+  }
+
+  it('serialises an entry WITHOUT corroborations byte-identically to before the change', () => {
+    expect(serializeEntry(minimalKen)).toBe(FROZEN_MINIMAL)
+    expect(serializeEntry(fullKen)).toBe(FROZEN_FULL)
+  })
+
+  it('still emits no corroborations key after a parse/serialize round-trip', () => {
+    // An old entry that travels through the NEW parser must come back byte-identical — this is what
+    // makes landing kindred ahead of a consumer safe for entries that predate the field.
+    expect(serializeEntry(parseEntry(FROZEN_FULL))).toBe(FROZEN_FULL)
+    expect(FROZEN_FULL).not.toContain('corroborations')
+  })
+
+  it('round-trips an entry WITH corroborations, preserving order and every field', () => {
+    const corroborated: KenEntry = {
+      ...fullKen,
+      corroborations: [
+        { source: 'dns', locator: 'wren.example.org', confirmedAt: 1749500000 },
+        { source: 'social-channel', locator: 'https://example.social/@wren', confirmedAt: 1749900000 },
+      ],
+    }
+    const parsed = parseEntry(serializeEntry(corroborated))
+    if (parsed.tier !== 'ken') throw new Error('expected ken tier')
+    expect(parsed.corroborations).toEqual(corroborated.corroborations)
+    // Array element order is meaningful (observation order) and must survive stableSort.
+    expect(parsed.corroborations!.map((c) => c.source)).toEqual(['dns', 'social-channel'])
+    // The primary provenance is untouched by the presence of corroborations.
+    expect(parsed.provenance).toEqual(fullKen.provenance)
+    expect(serializeEntry(parsed)).toBe(serializeEntry(corroborated))
+  })
+
+  it('preserves an explicitly empty corroborations array (no silent shape mutation)', () => {
+    const withEmpty = JSON.stringify({ ...toWire(minimalKen), corroborations: [] })
+    const parsed = parseEntry(withEmpty)
+    if (parsed.tier !== 'ken') throw new Error('expected ken tier')
+    expect(parsed.corroborations).toEqual([])
+  })
+
+  it('REJECTS malformed corroborations rather than silently dropping evidence', () => {
+    const bad = (corroborations: unknown) =>
+      JSON.stringify({ ...toWire(minimalKen), corroborations })
+
+    expect(() => parseEntry(bad('not-an-array'))).toThrow(/corroborations must be an array/)
+    expect(() => parseEntry(bad([null]))).toThrow(/provenance must be an object/)
+    expect(() => parseEntry(bad([{ source: 'dns', locator: 'x' }]))).toThrow(/confirmedAt/)
+    expect(() => parseEntry(bad([{ source: 'dns', confirmedAt: 1 }]))).toThrow(/locator/)
+    // An unknown source in a CORROBORATION is rejected by the same allow-list as the primary.
+    expect(() => parseEntry(bad([{ source: 'telepathy', locator: 'x', confirmedAt: 1 }]))).toThrow(
+      /provenance.source invalid/,
+    )
+    // One good + one bad rejects the whole entry — evidence that fails its guard is never quietly
+    // discarded into an otherwise valid-looking record.
+    expect(() =>
+      parseEntry(bad([{ source: 'dns', locator: 'ok', confirmedAt: 1 }, { source: 'nope', locator: 'x', confirmedAt: 1 }])),
+    ).toThrow(/provenance.source invalid/)
+  })
+
+  it('accepts EXACTLY the pre-existing source union — no value added, none removed', () => {
+    // The union is frozen: adding a value would be BREAKING, because an older validator throws on an
+    // unrecognised source and would reject the ENTIRE entry, not just the field.
+    const FROZEN_SOURCES = ['nip05', 'dns', 'web', 'social-channel', 'in-person', 'manual']
+    for (const source of FROZEN_SOURCES) {
+      const json = JSON.stringify({
+        ...toWire(minimalKen),
+        corroborations: [{ source, locator: 'x', confirmedAt: 1 }],
+      })
+      const parsed = parseEntry(json)
+      if (parsed.tier !== 'ken') throw new Error('expected ken tier')
+      expect(parsed.corroborations![0].source).toBe(source)
+    }
+    for (const source of ['companion', 'qr-scan', 'in_person', 'NIP05', '']) {
+      const json = JSON.stringify({
+        ...toWire(minimalKen),
+        corroborations: [{ source, locator: 'x', confirmedAt: 1 }],
+      })
+      expect(() => parseEntry(json)).toThrow(/provenance.source invalid/)
+    }
+  })
+
+  it('does not reconstruct corroborations onto a non-ken tier', () => {
+    // `corroborations` is a KEN field. `parseEntry` reconstructs from a whitelist, so a kith entry
+    // carrying one comes back without it. (Note this is a statement about the PARSER: `toWire` is a
+    // shallow copy, so a hand-built object with a stray key would still emit it — same pre-existing
+    // behaviour as any other unknown key.)
+    const smuggled = JSON.stringify({
+      ...toWire(kith),
+      corroborations: [{ source: 'dns', locator: 'x', confirmedAt: 1 }],
+    })
+    const parsed = parseEntry(smuggled)
+    expect(parsed.tier).toBe('kith')
+    expect(serializeEntry(parsed)).not.toContain('corroborations')
+  })
+
+  it('caps the corroborations array so a restored backup cannot amplify memory', () => {
+    // Unlike `previousPubkeys` (uncapped, but fixed 64-char elements), a corroboration carries an
+    // unbounded `locator`, so an uncapped array is a real amplification surface. Safe to cap: the
+    // field is new, so no stored entry can trip it.
+    const make = (n: number) => JSON.stringify({
+      ...toWire(minimalKen),
+      corroborations: Array.from({ length: n }, () => ({ source: 'web', locator: 'x', confirmedAt: 1 })),
+    })
+    expect(() => parseEntry(make(MAX_CORROBORATIONS))).not.toThrow()
+    expect(() => parseEntry(make(MAX_CORROBORATIONS + 1))).toThrow(/at most 64 corroborations/)
   })
 })

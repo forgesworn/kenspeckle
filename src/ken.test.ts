@@ -14,6 +14,8 @@ import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure
 import {
   pinKen,
   pinKenFromNip05,
+  addCorroboration,
+  summarizeKenProvenance,
   buildKeyControlChallenge,
   verifyKeyControl,
   attributeSignature,
@@ -497,5 +499,168 @@ describe('dropKen', () => {
   it('is a void no-op marker (removal is the consumer\'s responsibility)', () => {
     const { pk } = freshKeypair()
     expect(dropKen(pinManual(pk))).toBeUndefined()
+  })
+})
+
+// --- corroboration (several independent channels agreeing) ----------------------------------------
+//
+// A single channel can be compromised — a domain can be hijacked, a social account taken over. The
+// durable defence is CORROBORATION: independent channels agreeing. These helpers are additive; the
+// primary `provenance` is never touched by any of them.
+
+describe('addCorroboration', () => {
+  const dns = { source: 'dns' as const, locator: 'wren.example.org', confirmedAt: 1_700_000_100 }
+  const web = { source: 'web' as const, locator: 'https://example.org/keys', confirmedAt: 1_700_000_200 }
+
+  it('appends without touching the primary provenance, and is PURE', () => {
+    const { pk } = freshKeypair()
+    const original = pinManual(pk)
+    const next = addCorroboration(original, dns)
+
+    expect(next.corroborations).toEqual([dns])
+    expect(next.provenance).toEqual(original.provenance) // primary untouched
+    expect(original.corroborations).toBeUndefined()      // input never mutated
+    expect(next).not.toBe(original)
+  })
+
+  it('appends in observation order across repeated calls', () => {
+    const { pk } = freshKeypair()
+    const next = addCorroboration(addCorroboration(pinManual(pk), dns), web)
+    expect(next.corroborations).toEqual([dns, web])
+  })
+
+  it('does NOT de-duplicate — a later re-check is new recency evidence, not a duplicate', () => {
+    const { pk } = freshKeypair()
+    const later = { ...dns, confirmedAt: dns.confirmedAt + 31_536_000 }
+    const next = addCorroboration(addCorroboration(pinManual(pk), dns), later)
+    expect(next.corroborations).toHaveLength(2)
+    expect(next.corroborations![1].confirmedAt).toBe(later.confirmedAt)
+  })
+})
+
+describe('pinKen corroborations argument', () => {
+  it('records supplied corroborations and copies the array defensively', () => {
+    const { pk } = freshKeypair()
+    const supplied = [{ source: 'dns' as const, locator: 'wren.example.org', confirmedAt: 5 }]
+    const entry = pinKen({
+      pubkeyHex: pk,
+      ownerPubkeyHex: OWNER,
+      provenance: { source: 'in-person', locator: 'gathering', confirmedAt: 4 },
+      corroborations: supplied,
+    })
+    expect(entry.corroborations).toEqual(supplied)
+    supplied.push({ source: 'web', locator: 'x', confirmedAt: 6 })
+    expect(entry.corroborations).toHaveLength(1) // caller's later mutation does not leak in
+  })
+
+  it('omits the field entirely when absent or empty — byte-compatible with a pre-change pin', () => {
+    const { pk } = freshKeypair()
+    const base = { pubkeyHex: pk, ownerPubkeyHex: OWNER, provenance: { source: 'manual' as const, locator: 'l', confirmedAt: 1 } }
+    expect('corroborations' in pinKen(base)).toBe(false)
+    expect('corroborations' in pinKen({ ...base, corroborations: [] })).toBe(false)
+  })
+})
+
+describe('summarizeKenProvenance', () => {
+  it('reports a lone primary as one confirmation — never zero', () => {
+    const { pk } = freshKeypair()
+    const s = summarizeKenProvenance(pinManual(pk))
+    expect(s).toEqual({
+      confirmations: 1,
+      claimed: 0,
+      distinctSources: 1,
+      distinctLocators: 1,
+      sources: ['manual'],
+      mostRecentAt: 1_700_000_000,
+      oldestAt: 1_700_000_000,
+    })
+  })
+
+  it('counts the primary PLUS corroborations, primary source first', () => {
+    const { pk } = freshKeypair()
+    const entry = addCorroboration(
+      addCorroboration(pinManual(pk), { source: 'dns', locator: 'wren.example.org', confirmedAt: 1_700_000_500 }),
+      { source: 'in-person', locator: 'peat-bog/march', confirmedAt: 1_699_999_000 },
+    )
+    const s = summarizeKenProvenance(entry)
+    expect(s.confirmations).toBe(3)
+    expect(s.distinctSources).toBe(3)
+    expect(s.distinctLocators).toBe(3)
+    expect(s.sources).toEqual(['manual', 'dns', 'in-person']) // first-seen order, primary first
+    expect(s.mostRecentAt).toBe(1_700_000_500)
+    expect(s.oldestAt).toBe(1_699_999_000)
+  })
+
+  it('does NOT overstate independence when a source repeats', () => {
+    const { pk } = freshKeypair()
+    const entry = addCorroboration(
+      addCorroboration(pinManual(pk), { source: 'web', locator: 'https://a.example/keys', confirmedAt: 2 }),
+      { source: 'web', locator: 'https://b.example/keys', confirmedAt: 3 },
+    )
+    const s = summarizeKenProvenance(entry)
+    expect(s.confirmations).toBe(3)
+    expect(s.distinctSources).toBe(2)   // manual + web — two web entries collapse
+    expect(s.sources).toEqual(['manual', 'web'])
+  })
+
+  it('case-folds locators so the same locator twice never reads as two independent channels', () => {
+    const { pk } = freshKeypair()
+    const entry = addCorroboration(
+      addCorroboration(pinManual(pk), { source: 'dns', locator: 'Wren.Example.org', confirmedAt: 2 }),
+      { source: 'web', locator: 'wren.example.ORG', confirmedAt: 3 },
+    )
+    expect(summarizeKenProvenance(entry).distinctLocators).toBe(2) // 'met at a talk' + the one domain
+  })
+
+  it('survives a very large corroborations array (no argument-limit crash)', () => {
+    // REGRESSION: `corroborations` has no length cap (matching `previousPubkeys`), and a restored
+    // backup is disk-controlled input. `Math.max(...times)` would throw RangeError here.
+    const { pk } = freshKeypair()
+    const many: KenEntry = {
+      ...pinManual(pk),
+      corroborations: Array.from({ length: 200_000 }, (_, i) => ({
+        source: 'web' as const, locator: `https://e.example/${i}`, confirmedAt: 1_000 + i,
+      })),
+    }
+    const s = summarizeKenProvenance(many)
+    expect(s.confirmations).toBe(200_001)
+    expect(s.mostRecentAt).toBe(1_700_000_000) // the primary is still the newest
+    expect(s.oldestAt).toBe(1_000)
+  })
+
+  it('reports how much apparent corroboration is only a RELAYED CLAIM', () => {
+    // The honesty case that matters: a ken landed entirely from a companion app can show six
+    // confirmations across six distinct sources while NOTHING was verified first-hand. Reporting
+    // only the totals would present maximum apparent corroboration for zero verification.
+    const { pk } = freshKeypair()
+    const allClaimed: KenEntry = {
+      ...pinManual(pk),
+      provenance: { source: 'manual', locator: 'companion:Evil', confirmedAt: 1_700_000_000 },
+      corroborations: [
+        { source: 'in-person', locator: 'companion:Evil:a-gathering', confirmedAt: 1_700_000_001 },
+        { source: 'dns', locator: 'companion:Evil:wren.example.org', confirmedAt: 1_700_000_002 },
+      ],
+    }
+    const s = summarizeKenProvenance(allClaimed)
+    expect(s.confirmations).toBe(3)
+    expect(s.distinctSources).toBe(3) // looks maximally corroborated…
+    expect(s.claimed).toBe(3)         // …but every single record is a relayed claim
+    expect(s.confirmations - s.claimed).toBe(0) // nothing confirmed first-hand
+
+    // A genuinely mixed record separates cleanly.
+    const mixed = addCorroboration(pinManual(pk), {
+      source: 'dns', locator: 'companion:Evil:wren.example.org', confirmedAt: 2,
+    })
+    const m = summarizeKenProvenance(mixed)
+    expect(m.confirmations).toBe(2)
+    expect(m.claimed).toBe(1)
+  })
+
+  it('is pure — summarising does not alter the entry', () => {
+    const { pk } = freshKeypair()
+    const entry = addCorroboration(pinManual(pk), { source: 'dns', locator: 'd', confirmedAt: 2 })
+    const before = JSON.stringify(entry)
+    summarizeKenProvenance(entry)
+    expect(JSON.stringify(entry)).toBe(before)
   })
 })

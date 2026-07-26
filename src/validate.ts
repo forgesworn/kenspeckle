@@ -33,6 +33,9 @@ const KIN_RELATIONSHIPS = new Set([
 ])
 
 const KEN_SOURCES = new Set(['nip05', 'dns', 'web', 'social-channel', 'in-person', 'manual'])
+
+/** Upper bound on `KenEntry.corroborations` — see the note at its validation site. */
+export const MAX_CORROBORATIONS = 64
 const KEN_ROTATION_VIA = new Set(['nip05', 'announcement', 'manual'])
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -65,7 +68,9 @@ function optString(o: Record<string, unknown>, field: string): string | undefine
   return v
 }
 
-function validateProvenance(v: unknown): KenProvenance {
+/** Exported so the companion RETURN rail validates claimed provenance against the SAME allow-list.
+ *  One `KEN_SOURCES` set in the codebase — a second copy is how the two silently drift apart. */
+export function validateProvenance(v: unknown): KenProvenance {
   if (!isRecord(v)) throw new Error('kindred ken: provenance must be an object')
   const source = v.source
   if (typeof source !== 'string' || !KEN_SOURCES.has(source)) {
@@ -224,6 +229,27 @@ export function validateEntryShape(raw: unknown, allowAnnotations: boolean): Kin
     entry.previousPubkeys = (raw.previousPubkeys as string[]).map((p) => p.toLowerCase())
   }
   if (raw.rotation !== undefined) entry.rotation = validateRotation(raw.rotation)
+  // Corroborations: additional independent confirmations (§3.2). Each element is validated by the
+  // SAME `validateProvenance` used for the primary, so the `source` allow-list is shared — there is
+  // exactly one KEN_SOURCES set and corroborations can never widen it. Malformed input THROWS
+  // (matching `previousPubkeys` / `rotation`) rather than being silently dropped: a corroboration is
+  // evidence, and evidence that fails its guard must not be quietly discarded into a valid-looking
+  // entry. An empty array is preserved as-is (same as `previousPubkeys: []`) so parse/serialize
+  // round-trips faithfully rather than silently mutating the caller's shape.
+  if (raw.corroborations !== undefined) {
+    if (!Array.isArray(raw.corroborations)) {
+      throw new Error('kindred ken: corroborations must be an array')
+    }
+    // Bounded, unlike `previousPubkeys`. That precedent is uncapped but its elements are fixed
+    // 64-char hex, so its worst case is bounded per element; a corroboration carries an unbounded
+    // `locator` string, so an uncapped array is a genuine memory-amplification surface for a
+    // restored backup or a synced entry. The cap is far above any real ken (that would be 64
+    // separate re-checks of one key) and this is a NEW field, so no stored entry can trip it.
+    if (raw.corroborations.length > MAX_CORROBORATIONS) {
+      throw new Error(`kindred ken: at most ${MAX_CORROBORATIONS} corroborations`)
+    }
+    entry.corroborations = raw.corroborations.map(validateProvenance)
+  }
   if (raw.revoked !== undefined) {
     if (typeof raw.revoked !== 'boolean') throw new Error('kindred ken: revoked must be a boolean')
     entry.revoked = raw.revoked

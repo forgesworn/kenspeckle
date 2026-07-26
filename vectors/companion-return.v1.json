@@ -1,0 +1,125 @@
+{
+  "description": "Frozen companion RETURN rail (design §10): envelope bytes, claim preservation, and the landReturnedKen locator grammar (companion:<appName>:<locator>, : and % escaped, confirmedAt clamped). A claim must stay structurally distinguishable from a first-party confirmation.",
+  "nowSec": 1750000000,
+  "appName": "Murmurate",
+  "ownerPubkey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "constants": {
+    "dTag": "signet:companion-return",
+    "additionsCap": 50,
+    "corroborationsCap": 8,
+    "locatorMax": 512
+  },
+  "envelope": {
+    "additions": [
+      {
+        "pubkey": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "displayName": "Wren",
+        "nip05": "wren@example.org",
+        "claimedProvenance": {
+          "source": "in-person",
+          "locator": "peat-bog-collective/march-gathering",
+          "confirmedAt": 1749999900
+        },
+        "claimedCorroborations": [
+          {
+            "source": "dns",
+            "locator": "wren.example.org",
+            "confirmedAt": 1749999950
+          }
+        ]
+      },
+      {
+        "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    "json": "{\"v\":1,\"additions\":[{\"pubkey\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"displayName\":\"Wren\",\"nip05\":\"wren@example.org\",\"claimedProvenance\":{\"source\":\"in-person\",\"locator\":\"peat-bog-collective/march-gathering\",\"confirmedAt\":1749999900},\"claimedCorroborations\":[{\"source\":\"dns\",\"locator\":\"wren.example.org\",\"confirmedAt\":1749999950}]},{\"pubkey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}]}",
+    "parsed": {
+      "v": 1,
+      "additions": [
+        {
+          "pubkey": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "displayName": "Wren",
+          "nip05": "wren@example.org",
+          "claimedProvenance": {
+            "source": "in-person",
+            "locator": "peat-bog-collective/march-gathering",
+            "confirmedAt": 1749999900
+          },
+          "claimedCorroborations": [
+            {
+              "source": "dns",
+              "locator": "wren.example.org",
+              "confirmedAt": 1749999950
+            }
+          ]
+        },
+        {
+          "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    }
+  },
+  "landed": {
+    "tier": "ken",
+    "pubkey": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "ownerPubkey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "addedAt": 1750000000,
+    "provenance": {
+      "source": "manual",
+      "locator": "companion:Murmurate",
+      "confirmedAt": 1750000000
+    },
+    "displayName": "Wren",
+    "corroborations": [
+      {
+        "source": "in-person",
+        "locator": "companion:Murmurate:peat-bog-collective/march-gathering",
+        "confirmedAt": 1749999900
+      },
+      {
+        "source": "dns",
+        "locator": "companion:Murmurate:wren.example.org",
+        "confirmedAt": 1749999950
+      },
+      {
+        "source": "nip05",
+        "locator": "companion:Murmurate:wren@example.org",
+        "confirmedAt": 1750000000
+      }
+    ]
+  },
+  "spoof": {
+    "appName": "Murmurate:trusted",
+    "input": {
+      "pubkey": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "claimedProvenance": {
+        "source": "in-person",
+        "locator": "y",
+        "confirmedAt": 1750000000
+      }
+    },
+    "landed": {
+      "tier": "ken",
+      "pubkey": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "ownerPubkey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "addedAt": 1750000000,
+      "provenance": {
+        "source": "manual",
+        "locator": "companion:Murmurate%3Atrusted",
+        "confirmedAt": 1750000000
+      },
+      "corroborations": [
+        {
+          "source": "in-person",
+          "locator": "companion:Murmurate%3Atrusted:y",
+          "confirmedAt": 1750000000
+        }
+      ]
+    }
+  },
+  "malformedEnvelopes": [
+    "not json",
+    "{\"v\":2,\"additions\":[]}",
+    "{\"v\":1}"
+  ]
+}

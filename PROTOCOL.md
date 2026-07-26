@@ -493,8 +493,24 @@ absent keys never materialise). Two devices therefore serialise **identical byte
 for the same entry (cross-device sync, §12.1). The output **never** contains an
 `annotations` key — both because `toWire` removes it and because the sort emits only
 present keys. `parseEntry` runs full field guards (allow-listed tier, 64-hex
-pubkeys, finite timestamps, mutual-tier shared-secret, ken provenance) and never
-restores annotations (the wire form never carried them).
+pubkeys, finite timestamps, mutual-tier shared-secret, ken provenance **and each
+ken corroboration**, capped at 64) and never restores annotations (the wire form
+never carried them).
+
+**`corroborations` (optional, ken only).** An array of `KenProvenance` recording
+*additional independent channels* that agree the key belongs to the person;
+`provenance` remains the required, singular primary. Element order is observation
+order and is preserved (the key-sort orders object keys, not array elements). Each
+element is validated by the **same** allow-list as the primary, so the `source`
+union is shared and cannot widen. The field is **purely additive**: an entry
+without it serialises byte-identically to one produced before the field existed,
+because the sort emits only present keys. Malformed corroborations are **rejected**
+(the whole entry throws) rather than dropped — evidence that fails its guard must
+not be quietly discarded into a valid-looking record.
+
+Because `parseEntry` reconstructs from a whitelist, an **older** parser meeting a
+newer entry silently drops `corroborations` on re-serialisation. That is round-trip
+data loss through old code, not breakage; land kindred and its consumers together.
 
 ---
 
@@ -510,6 +526,63 @@ contacts and pairing state.
 
 Kindred does not open relays, schedule timers, store keys, encrypt content or
 render grant UI. Those are application lifecycle and policy concerns.
+
+### 10.1 Return rail — proposing a ken
+
+The return direction is **kens-only, by construction**. A kith/kin entry is a
+bond carrying an ECDH `sharedSecret` minted by a ceremony between *identity*
+keys; a companion app holds only its own device keypair, so it **cannot** mint
+one. It can capture a name + pubkey, which is exactly a ken. The companion
+publishes an encrypted kind-30078 replaceable event under
+`d=signet:companion-return`, content
+`{ v: 1, additions: WireKen[] }`:
+
+```jsonc
+{ "pubkey": "<64-hex>", "displayName": "Wren", "nip05": "wren@example.org",
+  "claimedProvenance":     { "source": "in-person", "locator": "…", "confirmedAt": 1750000000 },
+  "claimedCorroborations": [ { "source": "dns", "locator": "…", "confirmedAt": 1750000100 } ] }
+```
+
+`claimed*` fields use `KenProvenance` **verbatim** — the `source` union is
+unchanged, and an unrecognised source drops that claim on parse. At most
+`RETURN_ADDITIONS_CAP` (50) additions per envelope and
+`RETURN_CORROBORATIONS_CAP` (8) claims per addition; `parseReturnEnvelope`
+rejects a structurally-bad envelope (`null`) but drops only the offending
+addition otherwise.
+
+**A claim is not a confirmation.** `landReturnedKen` projects a `WireKen` into a
+`KenEntry` under exactly two rules, applied in one place so they cannot drift:
+
+| field | value |
+|---|---|
+| `provenance` | `{ source:'manual', locator:'companion:<appName>', confirmedAt: now }` — what Signet can attest from its own knowledge |
+| `corroborations[]` | every claim, `source` preserved **verbatim**, locator rewritten `companion:<appName>:<claimed locator>`, `confirmedAt` clamped into `[0, now]` |
+| `nip05` | **NOT set.** See below. |
+
+**`entry.nip05` is never set from a claim.** It is not a label — it is the address
+`resolveKen` re-fetches, and a key change observed there is surfaced to the user as
+`via:'nip05'`, i.e. a DNS/TLS-anchored signal. Copying an app-supplied identifier
+into it would let a paired companion *choose the re-resolution authority* for a ken
+and have its own answer presented as an authoritative rotation proposal — the exact
+inversion of "no app but Signet is a source of identity truth". A claimed `nip05` is
+therefore shape-guarded (`local@domain`; it would otherwise be interpolated into a
+fetch URL) and filed as a namespaced **corroboration**. Signet sets `entry.nip05`
+only after resolving the identifier itself, which is the step that makes it a
+confirmation.
+
+**`companion:` is a RESERVED locator prefix.** Only `landReturnedKen` mints it; no
+first-party flow may use it. That reservation is what lets
+`summarizeKenProvenance().claimed` report how much of a ken's apparent corroboration
+is merely relayed claim rather than first-hand verification.
+
+**Locator grammar — `:` in `<appName>` is escaped as `%3A`.** This is load-bearing, not cosmetic. Without it the grammar is not injective and the namespace is **forgeable**: an app calling itself `Murmurate:trusted` and claiming locator `y` would emit `companion:Murmurate:trusted:y` — byte-identical to legitimate app `Murmurate` claiming locator `trusted:y`. Escaping the single delimiter character means splitting on the first two colons always recovers exactly `(appName, claimed locator)`. Only `:` is escaped, so ordinary names are unchanged. A claimed locator may itself contain `:` — everything after the second colon is the locator verbatim.
+
+A non-finite claimed `confirmedAt` is rejected (`landReturnedKen` throws) rather than clamped, since `Math.min(NaN, now)` is `NaN` and would emit an entry that kindred's own `validateProvenance` rejects.
+
+So real `in-person` evidence survives the journey as `in-person` instead of being
+flattened to "manual, via some app" — while the namespace makes it structurally
+impossible to misread a claim as something Signet confirmed itself, and the clamp
+stops an app claiming a future confirmation to poison recency reasoning.
 
 ## 11. Constants summary
 
@@ -527,3 +600,6 @@ render grant UI. Those are application lifecycle and policy concerns.
 | companion ack kind | `21237` | `./companion-rail` |
 | companion snapshot kind | `30078` | `./companion-rail` |
 | companion snapshot d-tag | `"signet:companion-rail"` | `./companion-rail` |
+| companion return d-tag | `"signet:companion-return"` | `./companion-rail` |
+| return additions cap | `50` | `./companion-rail` |
+| return corroborations cap | `8` per addition | `./companion-rail` |

@@ -144,7 +144,7 @@ subpaths** (so a consumer that only needs `./bond` doesn't pull the discovery /
 
 | Export | Purpose |
 |--------|---------|
-| types `KindredTier`, `KindredEntry` (`KinEntry`/`KithEntry`/`KenEntry`), `MutualEntry`, `KenProvenance`, `KenRotation`, `PrivateAnnotations`, `WireEntry` | the relationship model |
+| types `KindredTier`, `KindredEntry` (`KinEntry`/`KithEntry`/`KenEntry`), `MutualEntry`, `KenProvenance`, `KenRotation`, `PrivateAnnotations`, `WireEntry` | the relationship model — `KenEntry.corroborations?` records *additional independent* channels agreeing (`provenance` stays the required, singular primary) |
 | `EventTemplate`, `NostrEvent`, `NostrFilter` | re-exported `nostr-tools` aliases — **one** canonical event type |
 | `hasSharedSecret(entry)` | type predicate — narrows to the kin/kith arms that carry a `sharedSecret` |
 | `scopeToPersona(entry, personaPubkeyHex)` / `assertOwnedPersona(personaPubkeyHex, myLeaves)` | persona scoping (the latter throws unless owned) |
@@ -161,6 +161,19 @@ Pure wire ownership shared by Signet producers and companion consumers:
 the frozen `ACK_KIND`, `SNAPSHOT_KIND`, and `SNAPSHOT_D_TAG` constants. Relay
 subscriptions, encryption, device keys, clocks, storage, retry policy and UI
 remain in the consuming app.
+
+**Return rail** — `WireKen`, `buildReturnEnvelope` / `parseReturnEnvelope`,
+`landReturnedKen`, and the `RETURN_D_TAG` / `RETURN_ADDITIONS_CAP` /
+`RETURN_CORROBORATIONS_CAP` constants. A companion app holds no identity keys, so
+it can never mint a kith/kin bond — it can only **propose a ken**. It *can*,
+however, carry the provenance it **claims** (`claimedProvenance` /
+`claimedCorroborations`): the companion is often where the evidence actually is,
+and scanning someone's code while standing next to them is real `in-person`
+provenance. `landReturnedKen` preserves that claim as a **corroboration**
+namespaced `companion:<appName>:<locator>` (with `confirmedAt` clamped to now),
+while the primary `provenance` stays `{ source:'manual',
+locator:'companion:<appName>' }` — what Signet can attest itself. A claim is
+preserved, never promoted: **no app but Signet is a source of identity truth.**
 
 ### `./handshake`
 
@@ -188,6 +201,30 @@ TOFU); `buildKeyControlChallenge()`; `verifyKeyControl(entry, nonce, signedEvent
 (**live**, fail-closed); `attributeSignature(entry, event)` (**replayable** — credit,
 don't authenticate); `resolveKen` (propose-not-flip) / `acceptKenRotation` /
 `revokeKen` / `dropKen` (consumer deletes).
+
+`addCorroboration(entry, provenance)` records **another independent channel**
+agreeing this key is this person — pure, appends in observation order, never
+touches the primary `provenance`, and deliberately does **not** de-duplicate (a
+re-check a year later is new recency evidence). `summarizeKenProvenance(entry)`
+reports `{ confirmations, claimed, distinctSources, distinctLocators, sources,
+mostRecentAt, oldestAt }`.
+
+`claimed` is the one to render alongside any total. A ken landed from a companion
+app can show **six confirmations across six distinct sources with nothing verified
+first-hand** — every record is a relayed claim. `claimed` counts the records in the
+reserved `companion:` locator namespace, so `confirmations - claimed` is what was
+actually confirmed first-hand. Show a total without it and you present relayed
+claims as verification.
+
+It returns **facts, not a trust score** — on purpose. A scalar "strength" invites
+false precision and invites being used as an authorization input
+(`if (strength > 0.7) allow`), which is a security decision this primitive cannot
+underwrite; and weighting channels against each other (is one `in-person` worth
+two `nip05`?) is *consumer policy*, not a property of the data. It is also honest
+about its limits: `distinctSources` can **understate** independence (two different
+websites are both `web`) and `distinctLocators` can **overstate** it (one operator
+can serve two locators; DNS and the site behind it often share one point of
+compromise). Signals, not guarantees.
 
 ### `./discovery`
 

@@ -38,6 +38,7 @@
 
 import { bytesToHex, randomBytes } from '@noble/hashes/utils.js'
 import { verifyEvent } from 'nostr-tools/pure'
+import { COMPANION_LOCATOR_PREFIX } from './types.js'
 import type { NostrEvent, KenEntry, KenProvenance } from './types.js'
 
 /** Exactly 64 hex chars (case-insensitive; callers lowercase on the way out). */
@@ -84,6 +85,9 @@ export function pinKen(p: {
   ownerPubkeyHex: string
   displayName?: string
   provenance: KenProvenance
+  /** OPTIONAL additional independent confirmations (§3.2). Omitting it is exactly the pre-existing
+   *  behaviour — the field is only set on the returned entry when supplied and non-empty. */
+  corroborations?: KenProvenance[]
   nip05?: string
 }): KenEntry {
   const pubkey = normHex64(p.pubkeyHex, 'pubkeyHex')
@@ -97,8 +101,104 @@ export function pinKen(p: {
     provenance: p.provenance,
   }
   if (p.displayName !== undefined) entry.displayName = p.displayName
+  // Only materialise `corroborations` when there is something to record: a caller passing `[]` must
+  // not make the new entry serialise differently from one pinned without the argument at all.
+  if (p.corroborations !== undefined && p.corroborations.length > 0) {
+    entry.corroborations = [...p.corroborations]
+  }
   if (p.nip05 !== undefined) entry.nip05 = p.nip05
   return entry
+}
+
+/**
+ * Record ANOTHER independent channel confirming this key belongs to this person. PURE — returns a
+ * new entry; the input is never mutated.
+ *
+ * The primary `provenance` is NEVER touched. A later confirmation does not replace how you first
+ * came to believe the key; it stands alongside it, which is the entire point of corroboration.
+ * Appends in observation order (order is meaningful and preserved by `stableSort`, which sorts
+ * object keys but leaves array element order alone).
+ *
+ * Duplicates are NOT de-duplicated: re-checking the same domain a year later is a genuinely new
+ * confirmation with a new `confirmedAt`, and collapsing it would destroy the recency evidence.
+ */
+export function addCorroboration(entry: KenEntry, provenance: KenProvenance): KenEntry {
+  return { ...entry, corroborations: [...(entry.corroborations ?? []), provenance] }
+}
+
+/**
+ * Describe how much independent agreement stands behind this pin, and how fresh it is.
+ *
+ * ── WHY THIS RETURNS FACTS AND NOT A SCORE ───────────────────────────────────────────────────────
+ * It is tempting to reduce this to a single "trust strength" number. That is deliberately NOT done:
+ *   • A scalar invites false precision, and invites being used as an AUTHORIZATION input
+ *     (`if (strength > 0.7) allow`) — a security decision this primitive cannot underwrite.
+ *   • Weighting channels against each other (is one `in-person` worth two `nip05`?) is CONSUMER
+ *     POLICY, not a property of the data. A social-channel confirmation means something very
+ *     different to a game client than to a bank.
+ *   • Recency "decay" has the same problem: the half-life is a policy choice, not a fact.
+ * So this returns only what is literally true of the record, and the consumer applies its own rule.
+ *
+ * ── HONESTY ABOUT WHAT "INDEPENDENT" MEANS ───────────────────────────────────────────────────────
+ * Neither count PROVES independence. `distinctSources` can UNDERSTATE it (two different websites
+ * both count as one `web`); `distinctLocators` can OVERSTATE it (one operator can serve two
+ * locators, and DNS + the website behind it commonly share a single point of compromise). They are
+ * useful signals, not guarantees — same posture as the NIP-05 honesty note above.
+ *
+ * ── `claimed` — THE COUNT THAT KEEPS THE REST HONEST ──────────────────────────────────────────────
+ * A ken landed from a companion app can show six confirmations across six distinct sources while
+ * NOTHING was verified first-hand: every entry is a relayed claim, and the primary only means "this
+ * arrived via app X". Reporting only the totals would show maximum apparent corroboration for zero
+ * verification — a worse failure than having no summary at all. `claimed` counts the records whose
+ * locator sits in the RESERVED `companion:` namespace (`COMPANION_LOCATOR_PREFIX`), which only
+ * `landReturnedKen` mints and which no first-party flow may use. `confirmations - claimed` is
+ * therefore what was actually confirmed first-hand. A consumer that renders corroboration MUST use
+ * this, or it will present relayed claims as verification.
+ *
+ * @returns counts over the primary provenance PLUS every corroboration, `sources` in first-seen
+ *          order (primary first), and the newest/oldest `confirmedAt` across all of them. An entry
+ *          with no corroborations reports `confirmations: 1` — never zero.
+ */
+export function summarizeKenProvenance(entry: KenEntry): {
+  confirmations: number
+  /** How many of `confirmations` are relayed companion CLAIMS rather than first-hand checks. */
+  claimed: number
+  distinctSources: number
+  distinctLocators: number
+  sources: KenProvenance['source'][]
+  mostRecentAt: number
+  oldestAt: number
+} {
+  const all: KenProvenance[] = [entry.provenance, ...(entry.corroborations ?? [])]
+
+  const sources: KenProvenance['source'][] = []
+  for (const p of all) {
+    if (!sources.includes(p.source)) sources.push(p.source)
+  }
+  // Lowercase before counting locators: case-folding can only MERGE two entries into one, never
+  // split one into two, so it errs toward reporting LESS independence — the honest direction.
+  const locators = new Set(all.map((p) => p.locator.toLowerCase()))
+
+  // Fold rather than `Math.max(...times)`: `corroborations` has no length cap (matching
+  // `previousPubkeys`), and spreading a large array into a call blows the argument limit with a
+  // RangeError. A restored backup is disk-controlled input, so this must not be a crash surface.
+  // Seed from the primary, which is always present — `all` is never empty by construction.
+  let mostRecentAt = entry.provenance.confirmedAt
+  let oldestAt = entry.provenance.confirmedAt
+  for (const p of all) {
+    if (p.confirmedAt > mostRecentAt) mostRecentAt = p.confirmedAt
+    if (p.confirmedAt < oldestAt) oldestAt = p.confirmedAt
+  }
+
+  return {
+    confirmations: all.length,
+    claimed: all.filter((p) => p.locator.startsWith(COMPANION_LOCATOR_PREFIX)).length,
+    distinctSources: sources.length,
+    distinctLocators: locators.size,
+    sources,
+    mostRecentAt,
+    oldestAt,
+  }
 }
 
 /**

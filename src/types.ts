@@ -45,6 +45,17 @@ export interface KithEntry extends MutualEntry {
 export interface KenEntry extends KindredEntryBase {
   tier: 'ken'
   provenance: KenProvenance
+  /** ADDITIONAL independent channels that agree this key belongs to this person.
+   *
+   *  `provenance` above remains the REQUIRED, SINGULAR primary — every pre-existing reader keeps
+   *  working untouched. This list is purely additive: it lets "verified in person AND matches their
+   *  domain" be expressed instead of silently discarding all but one source.
+   *
+   *  WHY this matters: as appearance-based identity (name, face, voice, writing) becomes cheap to
+   *  forge, the durable defence is not a better single channel — it is SEVERAL INDEPENDENT channels
+   *  agreeing, because that is what survives any one channel being compromised. Reuses
+   *  `KenProvenance` verbatim, so no new `source` values are introduced (see validate.ts). */
+  corroborations?: KenProvenance[]
   nip05?: string
   lastResolvedAt?: number
   /** Current pinned key is `pubkey`. History preserves audit + lets attributeSignature reject old keys. */
@@ -59,6 +70,13 @@ export interface KenProvenance {
   locator: string
   confirmedAt: number
 }
+
+/** RESERVED locator prefix: a provenance whose `locator` starts with this was CLAIMED by a
+ *  companion app and relayed, not confirmed first-hand. `landReturnedKen` is the only thing in
+ *  kindred that mints one, and no first-party flow may mint a locator in this namespace — that
+ *  reservation is what lets `summarizeKenProvenance` report how much of a ken's apparent
+ *  corroboration is merely relayed claim (spec §6.5, companion rail design §10.3). */
+export const COMPANION_LOCATOR_PREFIX = 'companion:'
 
 export interface KenRotation {
   newPubkey: string

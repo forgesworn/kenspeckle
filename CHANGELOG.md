@@ -29,6 +29,52 @@ layered over `@forgesworn/tessera-kit`.
 - **Ken trust-store** (`./ken`) — pin a key from a NIP-05, then prove **live
   control** (`buildKeyControlChallenge` / `verifyKeyControl`) and detect rotation,
   so recognition tracks the *current* key rather than a stale pin.
+- **Corroborated provenance** (`.` + `./ken`) — an **optional**
+  `KenEntry.corroborations?: KenProvenance[]` records *additional independent
+  channels* that agree a key belongs to a person, so "verified in person **and**
+  matches their domain" can be expressed instead of keeping one source and
+  discarding the rest. Corroboration is the defence when any single channel can be
+  compromised. Helpers: `addCorroboration(entry, provenance)` (pure; never touches
+  the primary `provenance`), `summarizeKenProvenance(entry)`, and an optional
+  `corroborations` argument on `pinKen`.
+  **Fully additive — nothing breaks.** `provenance` remains required and singular,
+  so every existing reader is untouched; an entry *without* `corroborations`
+  serialises **byte-identically** to before (asserted explicitly in `model.test.ts`
+  against strings frozen from the pre-change build), and the frozen vectors pass
+  unmoved. The `KenProvenance['source']` union is **unchanged** — adding a value
+  there would be breaking, because `validateProvenance` throws on an unrecognised
+  source and an older validator would reject the *entire* entry.
+  *Known, accepted caveat:* because `parseEntry` reconstructs from a whitelist, an
+  old client that parses and re-serialises a new entry silently drops
+  `corroborations` — round-trip data loss through old code, not breakage. It argues
+  for landing kindred and signet-app together rather than skewed.
+- **Companion return rail** (`./companion-rail`) — `WireKen`,
+  `buildReturnEnvelope` / `parseReturnEnvelope`, `landReturnedKen`, and the
+  `RETURN_D_TAG` / `RETURN_ADDITIONS_CAP` / `RETURN_CORROBORATIONS_CAP` constants.
+  A proposing companion app can now carry the provenance it **claims**
+  (`claimedProvenance` / `claimedCorroborations`) instead of having real
+  `in-person` evidence flattened to "manual, via some app" in transit. signet-app
+  stays the authority: `landReturnedKen` keeps the primary `provenance` as
+  `{ source:'manual', locator:'companion:<appName>' }` and files every claim as a
+  **corroboration** whose locator is sanitised and namespaced
+  `companion:<appName>:<locator>` (with `:`/`%` percent-escaped in the app-name
+  segment so the grammar is injective and one app cannot forge another's
+  namespace) and `confirmedAt` clamped into `[0, now]` — so a claim is preserved
+  in full yet can never be misread as a first-party confirmation. `entry.nip05` is
+  deliberately **not** set from a claim: it is the address `resolveKen` re-fetches,
+  so populating it would let a companion choose a ken's re-resolution authority;
+  a claimed identifier is shape-guarded and filed as evidence instead. Types +
+  validators only; relay I/O, encryption and storage remain the app's.
+- **`summarizeKenProvenance().claimed`** — how many of a ken's confirmations are
+  *relayed companion claims* rather than first-hand checks, counted via the
+  reserved `companion:` locator prefix (`COMPANION_LOCATOR_PREFIX`). Without it a
+  fully attacker-authored ken reports six confirmations across six distinct
+  sources with nothing verified; a consumer rendering corroboration must show
+  `confirmations - claimed`.
+- **Frozen companion return-rail vector** (`vectors/companion-return.v1.json`) —
+  envelope bytes, claim preservation, the `landReturnedKen` projection, and the
+  namespace-escaping defence. The existing bond and companion-rail vectors are
+  untouched; the checker now runs 17 assertions across 3 files.
 - **Local presence discovery** (`./discovery`) — `discoverPresent` /
   `parseFilterPublication` test a held contact key against a community's signed
   membership-filter publication **locally**, with no enumeration affordance. Filter
