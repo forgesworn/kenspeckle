@@ -79,12 +79,12 @@
     "spoken-token": "^2.1.0"
   },
   "peerDependencies": {
-    "nostr-tools": "^2.23.12"
+    "nostr-tools": "^2.24.1"
   },
   "devDependencies": {
     "@scure/base": "^2.0.0",
     "@types/node": "^22",
-    "nostr-tools": "^2.23.12",
+    "nostr-tools": "^2.24.1",
     "typescript": "^6.0.2",
     "vitest": "^4.1.10"
   },
