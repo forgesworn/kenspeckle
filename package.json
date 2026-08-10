@@ -73,7 +73,7 @@
   "dependencies": {
     "@forgesworn/tessera-kit": "git+https://github.com/forgesworn/tessera-kit.git#175ca6dad33666418716bf307784552a3eb0534d",
     "@noble/ciphers": "^2.0.0",
-    "@noble/curves": "^2.0.1",
+    "@noble/curves": "^2.3.0",
     "@noble/hashes": "^2.0.1",
     "nostr-attestations": "^2.5.5",
     "spoken-token": "^2.1.0"
