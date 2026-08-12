@@ -1,4 +1,4 @@
-// kindred — encrypted self-backup (spec §6.7, §12.1).
+// kenspeckle — encrypted self-backup (spec §6.7, §12.1).
 //
 // The user's own portable, AES-grade backup of their relationship roster. Sealed with
 // XChaCha20-Poly1305 (`@noble/ciphers/chacha.js`), format `nonce(24) || ciphertext(+16 tag)`.
@@ -21,7 +21,7 @@ const TAG_LEN = 16
 
 function requireKey(key: Uint8Array): void {
   if (key.length !== KEY_LEN) {
-    throw new Error(`kindred backup: key must be ${KEY_LEN} bytes, got ${key.length}`)
+    throw new Error(`kenspeckle backup: key must be ${KEY_LEN} bytes, got ${key.length}`)
   }
 }
 
@@ -40,7 +40,7 @@ export function exportEntriesEncrypted(entries: KindredEntry[], key: Uint8Array)
 export function importEntries(blob: Uint8Array, key: Uint8Array): KindredEntry[] {
   requireKey(key)
   if (blob.length < NONCE_LEN + TAG_LEN) {
-    throw new Error('kindred backup: blob too short (need nonce + tag)')
+    throw new Error('kenspeckle backup: blob too short (need nonce + tag)')
   }
   const nonce = blob.subarray(0, NONCE_LEN)
   const ct = blob.subarray(NONCE_LEN)
@@ -51,9 +51,9 @@ export function importEntries(blob: Uint8Array, key: Uint8Array): KindredEntry[]
   try {
     raw = JSON.parse(bytesToUtf8(pt))
   } catch {
-    throw new Error('kindred backup: decrypted payload is not valid JSON')
+    throw new Error('kenspeckle backup: decrypted payload is not valid JSON')
   }
-  if (!Array.isArray(raw)) throw new Error('kindred backup: payload must be a JSON array')
+  if (!Array.isArray(raw)) throw new Error('kenspeckle backup: payload must be a JSON array')
   // allowAnnotations=true: the backup legitimately carries private annotations (§6.7).
   return raw.map((e) => validateEntryShape(e, true))
 }

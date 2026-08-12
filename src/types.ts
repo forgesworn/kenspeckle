@@ -1,5 +1,5 @@
-// kindred (main export) — relationship model types.
-// Source of truth: signet-plans/docs/plans/2026-06-02-kindred-primitive-spec.md §3.2.
+// kenspeckle (main export) — relationship model types.
+// Source of truth: signet-plans/docs/plans/2026-06-02-kenspeckle-primitive-spec.md §3.2.
 
 import type { EventTemplate, Event as NostrEvent, Filter as NostrFilter } from 'nostr-tools'
 
@@ -73,7 +73,7 @@ export interface KenProvenance {
 
 /** RESERVED locator prefix: a provenance whose `locator` starts with this was CLAIMED by a
  *  companion app and relayed, not confirmed first-hand. `landReturnedKen` is the only thing in
- *  kindred that mints one, and no first-party flow may mint a locator in this namespace — that
+ *  kenspeckle that mints one, and no first-party flow may mint a locator in this namespace — that
  *  reservation is what lets `summarizeKenProvenance` report how much of a ken's apparent
  *  corroboration is merely relayed claim (spec §6.5, companion rail design §10.3). */
 export const COMPANION_LOCATOR_PREFIX = 'companion:'
@@ -100,7 +100,7 @@ export type KindredEntry = KinEntry | KithEntry | KenEntry
 
 // --- K-1 additions (plan §K-1 Step 2) ---
 
-// Canonical nostr event/filter types — kindred re-exports these aliases so consumers have ONE event type.
+// Canonical nostr event/filter types — kenspeckle re-exports these aliases so consumers have ONE event type.
 export type { EventTemplate, NostrEvent, NostrFilter }
 
 /** Wire-safe view: PrivateAnnotations structurally removed (spec §4 — never serialised). */

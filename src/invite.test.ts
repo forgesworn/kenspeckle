@@ -1,4 +1,4 @@
-// kindred ./invite — tests.
+// kenspeckle ./invite — tests.
 //
 // Two surfaces under one subpath:
 //   (1) JoinInvite — a "come join this game" token. The inviter signs a canonical string over the

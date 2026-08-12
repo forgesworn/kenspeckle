@@ -1,4 +1,4 @@
-kindred Protocol — verified-relationship wire formats & ceremonies
+kenspeckle Protocol — verified-relationship wire formats & ceremonies
 ==================================================================
 
 For a clean-room re-implementer. This document specifies the byte-exact ECDH bond
@@ -114,7 +114,7 @@ expectation.
 
 So this is **best-effort zeroization of the byte copy only**. A future Rust/WASM
 port MUST zeroize the scalar and the ECDH point. We do not claim full
-zeroization. The same honest limitation applies everywhere kindred handles a
+zeroization. The same honest limitation applies everywhere kenspeckle handles a
 private key as a JS value (`buildJoinInvite`, `buildOptOutRequest`): the byte copy
 is wiped; the immutable bigint inside `@noble` is not wipeable from the call site.
 
@@ -144,7 +144,7 @@ The namespace is overridable via an optional `opts` argument for
   word back (spoken-token's echo defence) — each direction is an independent HMAC
   output.
 - **The `counter` is the consumer's choice** (time-bucketed or event-based);
-  kindred exposes pure functions and takes the counter as a parameter.
+  kenspeckle exposes pure functions and takes the counter as a parameter.
 - **Verification re-derives, it does not `verifyToken`.** The directional
   `pair\0`-prefixed context inside spoken-token is reachable **only** via
   `deriveDirectionalPair`. So `verifyBondWord` re-derives the expected counterparty
@@ -162,13 +162,13 @@ The namespace is overridable via an optional `opts` argument for
 signet-app's pre-migration `signet-me` derives its directional words with the SAME
 `deriveDirectionalPair` primitive but **different parameters**:
 
-| Parameter | `signet-me` (signet-protocol) | kindred default |
+| Parameter | `signet-me` (signet-protocol) | kenspeckle default |
 |-----------|-------------------------------|-----------------|
 | namespace | `'signet:me'` | `'kindred:bond'` (`KINDRED_BOND_NAMESPACE`) |
 | counter | `getCounter(now, 30)` (30 s rotation) | the consumer's chosen `counter` arg |
 | tolerance | `±1` epoch (clock-skew window) | `0` (exact counter) |
 
-So **with kindred's DEFAULT opts the words DIFFER from `signet-me`'s** — a naive
+So **with kenspeckle's DEFAULT opts the words DIFFER from `signet-me`'s** — a naive
 migration silently changes a contact's verification words. To let a migrated contact
 cross-verify with a peer who has **not** migrated yet, `bondWords` / `verifyBondWord`
 take an optional final `opts` that reproduce `signet-me`'s parameterisation
@@ -183,7 +183,7 @@ verifyBondWord(secret, myPub, theirPub, counter, spoken,
 
 - `namespace` — default `'kindred:bond'`; `'signet:me'` for compat. **This is the
   load-bearing knob**: changing the namespace changes the derived words. signet-me uses
-  caller-order roles `[myPubkey, theirPubkey]` while kindred sorts to `[lo, hi]`, but
+  caller-order roles `[myPubkey, theirPubkey]` while kenspeckle sorts to `[lo, hi]`, but
   **that ordering difference is immaterial** — and that is why there is no role-order
   knob. **Empirical note (verified against the installed `spoken-token`):**
   `deriveDirectionalPair` derives each word from `namespace + '\0' + role` — i.e. from
@@ -194,7 +194,7 @@ verifyBondWord(secret, myPub, theirPub, counter, spoken,
   `signet-me`.
 - `tolerance` (`verifyBondWord` only) — default `0`; `t` accepts `spoken` if it matches
   the counterparty word at any counter in `[counter-t, counter+t]`, mirroring
-  `signet-me`'s ±1 clock-skew window. kindred reproduces the words **via params** (it
+  `signet-me`'s ±1 clock-skew window. kenspeckle reproduces the words **via params** (it
   takes `counter` as an argument rather than deriving it from wall-clock).
   **Fail-soft clamping (the `{ ok }` contract — `verifyBondWord` MUST NOT throw on a
   valid-shaped call):** `t` is coerced to an integer in `[0, MAX_BOND_TOLERANCE]`
@@ -233,7 +233,7 @@ bond-existence oracle and is deliberately absent).
   the author may delete their event). A network-wide retraction can never be
   cryptographically guaranteed — NIP-09 is a request.
 
-`created_at`: `createAttestation` returns an optional `created_at`; kindred stamps
+`created_at`: `createAttestation` returns an optional `created_at`; kenspeckle stamps
 one if absent so the result satisfies the canonical (nostr-tools) `EventTemplate`
 where `created_at` is required. A caller may override before signing.
 
@@ -299,7 +299,7 @@ works — only `content` + sig + pubkey are inspected).
 - `revokeKen` sets `revoked = true` (compromise with no successor); both
   `attributeSignature` and `verifyKeyControl` then fail closed (`reason:'revoked'`,
   checked first).
-- `dropKen` is a documented **no-op** — kindred owns no storage, so deleting the
+- `dropKen` is a documented **no-op** — kenspeckle owns no storage, so deleting the
   record is the consumer's responsibility.
 
 ---
@@ -308,7 +308,7 @@ works — only `content` + sig + pubkey are inspected).
 
 Discovery is a thin layer over the sibling **@forgesworn/tessera-kit** membership filter: a
 server publishes a signed, non-enumerable presence filter; a client tests its own
-contacts locally (presence, not a member list). kindred holds no state, opens no
+contacts locally (presence, not a member list). kenspeckle holds no state, opens no
 sockets, and never enumerates a server's membership.
 
 ### 5.1 Kind allocation (provisional — NOT NIP-registered)
@@ -320,7 +320,7 @@ KINDRED_OPTOUT_KIND  = 30445   // a member's opt-out request
 
 Both are **provisional and not yet NIP-registered**. `30444` **matches
 @forgesworn/tessera-kit PROTOCOL.md §6 byte-for-byte** — the publication shape is shared so a
-@forgesworn/tessera-kit-only server (no `kindred` dependency) can emit an identical event. It
+@forgesworn/tessera-kit-only server (no `kenspeckle` dependency) can emit an identical event. It
 supersedes the `30078` placeholder from early design (`30078` is signet-app's
 contact-sync kind; reused here only as a historical note, never the recommended
 value).
@@ -388,7 +388,7 @@ is **not** a Nostr event — it is a structured token (QR/URL) signed with a
 ### 6.1 Canonical signing bytes (verbatim)
 
 ```
-digest = sha256( utf8( "kindred-invite:v1:" + namespace + ":" + serverId
+digest = sha256( utf8( "kenspeckle-invite:v1:" + namespace + ":" + serverId
                        + ":" + inviterPubkey + ":" + nonce
                        + ":" + (expiresAt ?? '') ) )
 sig    = bytesToHex( schnorr.sign(digest, hexToBytes(inviterPriv)) )
@@ -431,7 +431,7 @@ verified against the real `buildBondAttestation` output, not guessed); (d) a sub
 
 This is **per-attestation verification ONLY**. Counting a member's attestations into
 a set of **distinct verified humans** (the collective/guild sybil-resistance of
-§9.2) is the **consuming app's** job — kindred does **no graph traversal and no
+§9.2) is the **consuming app's** job — kenspeckle does **no graph traversal and no
 counting** (that would breach the §2 non-goals).
 
 > **`Symbol(verified)` footgun (also in SECURITY.md).** `nostr-tools`' `verifyEvent`
@@ -510,7 +510,7 @@ not be quietly discarded into a valid-looking record.
 
 Because `parseEntry` reconstructs from a whitelist, an **older** parser meeting a
 newer entry silently drops `corroborations` on re-serialisation. That is round-trip
-data loss through old code, not breakage; land kindred and its consumers together.
+data loss through old code, not breakage; land kenspeckle and its consumers together.
 
 ---
 
@@ -524,7 +524,7 @@ accepts only a strictly newer `publishedAt`; malformed and stale envelopes
 return the exact input state, while a newer `revoked:true` tombstone clears
 contacts and pairing state.
 
-Kindred does not open relays, schedule timers, store keys, encrypt content or
+Kenspeckle does not open relays, schedule timers, store keys, encrypt content or
 render grant UI. Those are application lifecycle and policy concerns.
 
 ### 10.1 Return rail — proposing a ken
@@ -577,7 +577,7 @@ is merely relayed claim rather than first-hand verification.
 
 **Locator grammar — `:` in `<appName>` is escaped as `%3A`.** This is load-bearing, not cosmetic. Without it the grammar is not injective and the namespace is **forgeable**: an app calling itself `Murmurate:trusted` and claiming locator `y` would emit `companion:Murmurate:trusted:y` — byte-identical to legitimate app `Murmurate` claiming locator `trusted:y`. Escaping the single delimiter character means splitting on the first two colons always recovers exactly `(appName, claimed locator)`. Only `:` is escaped, so ordinary names are unchanged. A claimed locator may itself contain `:` — everything after the second colon is the locator verbatim.
 
-A non-finite claimed `confirmedAt` is rejected (`landReturnedKen` throws) rather than clamped, since `Math.min(NaN, now)` is `NaN` and would emit an entry that kindred's own `validateProvenance` rejects.
+A non-finite claimed `confirmedAt` is rejected (`landReturnedKen` throws) rather than clamped, since `Math.min(NaN, now)` is `NaN` and would emit an entry that kenspeckle's own `validateProvenance` rejects.
 
 So real `in-person` evidence survives the journey as `in-person` instead of being
 flattened to "manual, via some app" — while the namespace makes it structurally
@@ -592,7 +592,7 @@ stops an app claiming a future confirmation to poison recency reasoning.
 | `KINDRED_FILTER_KIND` | `30444` (provisional; matches @forgesworn/tessera-kit) | `./discovery` |
 | `KINDRED_OPTOUT_KIND` | `30445` (provisional) | `./discovery` |
 | bond attestation kind | `31000` (`nostr-attestations` `ATTESTATION_KIND`) | `./bond`, `./invite` |
-| invite canonical prefix | `"kindred-invite:v1:"` | `./invite` |
+| invite canonical prefix | `"kenspeckle-invite:v1:"` | `./invite` |
 | d-tag prefix | `"kindred:members:"` | `./discovery` |
 | handshake / invite blob cap | `8192` bytes | `./handshake`, `./invite` |
 | filter blob cap | `64 MiB` (@forgesworn/tessera-kit `KFLT_MAX_BLOB_BYTES`) | `./discovery` |

@@ -2,7 +2,7 @@
 //
 // This module deliberately contains no relay client, subscription, timer,
 // storage, signing, encryption or UI code. Applications own those concerns;
-// Kindred owns only the bytes and state transition they must agree on.
+// Kenspeckle owns only the bytes and state transition they must agree on.
 
 import type { GrantContactView, GrantScope } from './grant-envelope.js'
 import { parseGrantEnvelope } from './grant-envelope.js'
@@ -304,7 +304,7 @@ function cleanLocator(value: string): string | undefined {
   return out.length > 0 ? out : undefined
 }
 
-/** Validate one claimed provenance, reusing kindred's single `KEN_SOURCES` allow-list, then
+/** Validate one claimed provenance, reusing kenspeckle's single `KEN_SOURCES` allow-list, then
  *  sanitise its locator. Returns null instead of throwing so one bad claim drops that claim, not
  *  the whole envelope. */
 function parseClaimedProvenance(v: unknown): KenProvenance | null {
@@ -449,7 +449,7 @@ export function parseReturnEnvelope(json: string): ReturnEnvelope | null {
  * testable, matching the rest of this module.
  *
  * @throws if `pubkey` / `ownerPubkeyHex` are not 64-hex, `nowSec` is not a non-negative integer, or
- *         any claim fails kindred's canonical `validateProvenance`.
+ *         any claim fails kenspeckle's canonical `validateProvenance`.
  */
 export function landReturnedKen(
   wire: WireKen,
@@ -481,7 +481,7 @@ export function landReturnedKen(
     ...(wire.claimedProvenance ? [wire.claimedProvenance] : []),
     ...(wire.claimedCorroborations ?? []),
   ]
-  // Run every claim through kindred's CANONICAL validator, not an ad-hoc check. This function is
+  // Run every claim through kenspeckle's CANONICAL validator, not an ad-hoc check. This function is
   // public and may be handed a hand-built `WireKen` that never met `parseReturnEnvelope`; an
   // unvalidated claim would produce an entry that `validateEntryShape` later rejects, and because
   // `importEntries` maps the validator over the whole roster, ONE bad corroboration would abort the
@@ -521,7 +521,7 @@ export function landReturnedKen(
       // Clamp into [0, nowSec] and floor to whole seconds. The upper bound stops an app claiming a
       // future confirmation; the lower bound stops an absurd pre-epoch value (finite, so
       // `validateProvenance` accepts it) landing in `summarizeKenProvenance().oldestAt` and
-      // rendering as an Invalid Date. Floor keeps kindred's whole-second timestamp convention.
+      // rendering as an Invalid Date. Floor keeps kenspeckle's whole-second timestamp convention.
       confirmedAt: Math.floor(Math.min(Math.max(c.confirmedAt, 0), opts.nowSec)),
     }))
   }

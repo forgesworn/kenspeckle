@@ -439,7 +439,7 @@ describe('return rail', () => {
   })
 
   it('rejects a non-finite claimed timestamp instead of emitting an invalid entry', () => {
-    // REGRESSION: NaN survived `Math.min`, producing an entry kindred's own validator rejects.
+    // REGRESSION: NaN survived `Math.min`, producing an entry kenspeckle's own validator rejects.
     for (const confirmedAt of [NaN, Infinity, -Infinity]) {
       expect(() => landReturnedKen(
         { pubkey: KEN, claimedProvenance: { ...inPerson, confirmedAt } },

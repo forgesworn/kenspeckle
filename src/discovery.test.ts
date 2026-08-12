@@ -1,4 +1,4 @@
-// kindred ./discovery — tests.
+// kenspeckle ./discovery — tests.
 //
 // `discovery` is the thin LOCAL-INTERSECTION layer over a sibling `tessera-kit` membership filter:
 // the consumer holds a set of `KindredEntry`s (their kith/kin/ken contacts, all scoped to ONE of

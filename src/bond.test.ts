@@ -1,4 +1,4 @@
-// kindred ./bond — tests. The migration-vector test (frozen ECDH secret) is THE gate: if it
+// kenspeckle ./bond — tests. The migration-vector test (frozen ECDH secret) is THE gate: if it
 // stops matching `fd2644…26f9`, the byte-exact-with-signet-protocol construction has drifted and
 // every migrated contact's verification words break. Do NOT change the expected value to make it
 // pass — debug the construction (spec §5.2, K-4).
@@ -101,7 +101,7 @@ describe('bondWords — directional spoken-token pair', () => {
   it('rejects a malformed secretHex with a KIT-shaped error (not a raw spoken-token / @noble error)', () => {
     // `secretHex` must be the 64-hex shape `deriveBondSecret` emits. Without the guard, an odd-length
     // or non-hex secret leaks `deriveDirectionalPair`'s raw `hexToBytes: odd-length hex string` (or
-    // similar) from inside spoken-token/@noble — an opaque error at the kindred boundary. The guard
+    // similar) from inside spoken-token/@noble — an opaque error at the kenspeckle boundary. The guard
     // surfaces a consistent `bondWords:` error instead. (verifyBondWord calls bondWords, so it's
     // covered transitively.)
     const ODD = 'abc' // odd-length hex → would raise the raw hexToBytes error
@@ -155,7 +155,7 @@ describe('verifyBondWord — constant-time compare of the counterparty word', ()
 
 // --- signet-me compatibility opts (migration continuity) ------------------------------------------
 // signet-app's `signet-me` derives words with namespace 'signet:me' + a ±tolerance counter window.
-// The `namespace` opt lets a migrated kindred contact reproduce those exact words to cross-verify with
+// The `namespace` opt lets a migrated kenspeckle contact reproduce those exact words to cross-verify with
 // a peer who hasn't migrated yet (each seat passes its OWN pubkey first). We verify the opt behaviour
 // IN ISOLATION (no signet/signet-protocol dependency) — the param mapping itself was confirmed by
 // reading signet/src/signet-me.ts.

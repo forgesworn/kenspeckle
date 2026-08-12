@@ -1,4 +1,4 @@
-// kindred ./ken — tests.
+// kenspeckle ./ken — tests.
 //
 // `ken` is the ONE-WAY recognition tier: pin a public key you didn't bond with (a public figure,
 // an org, a NIP-05 handle), then (a) prove LIVE control of that key with a fresh challenge nonce

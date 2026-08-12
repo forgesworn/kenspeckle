@@ -1,4 +1,4 @@
-// kindred — the `.` surface.
+// kenspeckle — the `.` surface.
 //
 // The default entry ships the relationship MODEL and the LOCAL operations that act on it:
 //   • the model types + the re-exported nostr-tools aliases (EventTemplate/NostrEvent/NostrFilter),
@@ -9,7 +9,7 @@
 // The protocol subpaths — `./handshake`, `./bond`, `./ken`, `./discovery`, `./invite`, and
 // `./companion-rail` — are
 // DELIBERATELY NOT re-exported here. Each is imported via its own subpath
-// (`import { deriveBondSecret } from 'kindred/bond'`) so a consumer that only needs, say, the bond
+// (`import { deriveBondSecret } from 'kenspeckle/bond'`) so a consumer that only needs, say, the bond
 // ceremony does not pull the discovery/tessera-kit graph. Keeping them off the `.` barrel is the
 // load-bearing tree-shaking + dependency-isolation boundary, not an oversight.
 

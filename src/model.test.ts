@@ -447,7 +447,7 @@ describe('ken corroborations — the NON-BREAKING guarantee', () => {
 
   it('still emits no corroborations key after a parse/serialize round-trip', () => {
     // An old entry that travels through the NEW parser must come back byte-identical — this is what
-    // makes landing kindred ahead of a consumer safe for entries that predate the field.
+    // makes landing kenspeckle ahead of a consumer safe for entries that predate the field.
     expect(serializeEntry(parseEntry(FROZEN_FULL))).toBe(FROZEN_FULL)
     expect(FROZEN_FULL).not.toContain('corroborations')
   })

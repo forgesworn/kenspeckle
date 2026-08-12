@@ -1,4 +1,4 @@
-// kindred (`./bond` subpath) — the migration-critical bond ceremony (spec §5.2, §5.4, §5.5, §5.6).
+// kenspeckle (`./bond` subpath) — the migration-critical bond ceremony (spec §5.2, §5.4, §5.5, §5.6).
 //
 // A "bond" is a kith relationship: two personas mutually verify each other out-of-band by speaking
 // short, time-rotating words derived from a shared ECDH secret (spoken-token). This file is the
@@ -6,7 +6,7 @@
 // byte-for-byte, or every contact migrated from signet-app gets a different secret → different words
 // → broken verification for both parties. The frozen vector in bond.test.ts is the regression gate.
 //
-// This is a STANDALONE subpath entry (`import { ... } from 'kindred/bond'`); it is deliberately NOT
+// This is a STANDALONE subpath entry (`import { ... } from 'kenspeckle/bond'`); it is deliberately NOT
 // re-exported from the `.` barrel. It works entirely with hex strings + @noble + spoken-token +
 // nostr-attestations — no TextEncoder/fetch, no model dependency, no console output anywhere.
 
@@ -101,7 +101,7 @@ export function deriveBondSecret(myPrivHex: string, theirPubHex: string): string
  *  because `mine = pair[aPubHex]` regardless of order). signet-me compat is reproduced by `namespace`
  *  alone. Each seat still passes its OWN pubkey as `aPubHex`, so it picks its own role's word.
  *
- *  With DEFAULT opts the words DIFFER from signet-me (kindred uses `'kindred:bond'`), so a naive
+ *  With DEFAULT opts the words DIFFER from signet-me (kenspeckle uses `'kindred:bond'`), so a naive
  *  migration changes the words — both peers must upgrade together OR pass the signet-me `namespace`. */
 export interface BondWordsOpts {
   /** Domain-separation namespace fed to `deriveDirectionalPair`. Default `KINDRED_BOND_NAMESPACE`
@@ -152,10 +152,10 @@ export function bondWords(
   counter: number,
   opts?: BondWordsOpts,
 ): { mine: string; theirs: string } {
-  // Guard the secret shape at the kindred boundary: `secretHex` must be the 64-hex value
+  // Guard the secret shape at the kenspeckle boundary: `secretHex` must be the 64-hex value
   // `deriveBondSecret` emits. Without this, an odd-length / non-hex secret reaches
   // `deriveDirectionalPair` and leaks a raw `hexToBytes: odd-length hex string` (spoken-token/@noble)
-  // — an opaque error with no kindred context. Match `deriveBondSecret`'s own error surface. This also
+  // — an opaque error with no kenspeckle context. Match `deriveBondSecret`'s own error surface. This also
   // covers `verifyBondWord` (it derives via `bondWords`); a malformed secret is a programmer error,
   // distinct from the fail-soft tolerance/counter clamps which never throw on a VALID-shaped call.
   if (typeof secretHex !== 'string' || !/^[0-9a-f]{64}$/i.test(secretHex)) {
@@ -170,7 +170,7 @@ export function bondWords(
   return { mine: pair[a]!, theirs: pair[b]! }
 }
 
-/** Max clock-skew window kindred will honour, mirroring spoken-token's own `MAX_TOLERANCE = 10`. A
+/** Max clock-skew window kenspeckle will honour, mirroring spoken-token's own `MAX_TOLERANCE = 10`. A
  *  larger `tolerance` is clamped to this (it is a dev arg, not attacker input — fail-soft, do not throw)
  *  so a bogus value can never spin an unbounded re-derivation loop. */
 export const MAX_BOND_TOLERANCE = 10
@@ -272,7 +272,7 @@ export function verifyBondWord(
  * created_at) before publishing, then records the resulting event id as the `BondAssertion.mineId`.
  *
  * `createAttestation` returns nostr-attestations' own template shape (`created_at?` optional); we
- * stamp `created_at` here so the result satisfies kindred's canonical `EventTemplate` (re-exported
+ * stamp `created_at` here so the result satisfies kenspeckle's canonical `EventTemplate` (re-exported
  * from nostr-tools, where `created_at` is REQUIRED — the "ONE event type" invariant from K-1). The
  * stamped value is a normal nostr build-time timestamp; a caller may still override it before signing
  * (`finalizeEvent` sets its own if needed).

@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `@forgesworn/kindred` are documented here. The format is
+All notable changes to `@forgesworn/kenspeckle` are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
@@ -47,7 +47,7 @@ layered over `@forgesworn/tessera-kit`.
   *Known, accepted caveat:* because `parseEntry` reconstructs from a whitelist, an
   old client that parses and re-serialises a new entry silently drops
   `corroborations` — round-trip data loss through old code, not breakage. It argues
-  for landing kindred and signet-app together rather than skewed.
+  for landing kenspeckle and signet-app together rather than skewed.
 - **Companion return rail** (`./companion-rail`) — `WireKen`,
   `buildReturnEnvelope` / `parseReturnEnvelope`, `landReturnedKen`, and the
   `RETURN_D_TAG` / `RETURN_ADDITIONS_CAP` / `RETURN_CORROBORATIONS_CAP` constants.
@@ -79,7 +79,7 @@ layered over `@forgesworn/tessera-kit`.
   `parseFilterPublication` test a held contact key against a community's signed
   membership-filter publication **locally**, with no enumeration affordance. Filter
   mechanics (build/sign/serialize/parse) are delegated to `@forgesworn/tessera-kit`;
-  kindred owns the relationship layer and the Nostr **kinds**.
+  kenspeckle owns the relationship layer and the Nostr **kinds**.
 - **Join invites** (`./invite`) — a custom-payload Schnorr-signed invite plus
   single-attestation verification.
 - **Companion data rail** (`./companion-rail`) — the shared Signet/Fledgling
@@ -132,12 +132,22 @@ layered over `@forgesworn/tessera-kit`.
 
 ### Notes
 
-- **Scoped package name.** This package publishes as **`@forgesworn/kindred`**.
+- **Scoped package name.** This package publishes as **`@forgesworn/kenspeckle`**.
+- **Renamed from `kindred` (2026-08-12, pre-publish).** "Kindred" became the
+  ForgeSworn app-suite umbrella brand, so the library (developed as
+  `@forgesworn/kindred`, never published) was renamed to *kenspeckle* (Scots:
+  *easily recognised, known by sight*). The **wire protocol keeps the historical
+  `kindred` naming, frozen**: bond namespace `'kindred:bond'`
+  (`KINDRED_BOND_NAMESPACE`), discovery d-tag prefix `'kindred:members:'`,
+  attestation type `'kindred-bond'`, and kinds 30444/30445 are unchanged —
+  renaming them would change every deployed bond word and published filter.
+  Exported identifiers that name those wire strings (`KINDRED_*`) and the model
+  types (`KindredEntry`, `KindredTier`) also keep their names.
 - **Publish order + lockfile.** `@forgesworn/tessera-kit` **MUST be on npm first** —
-  `@forgesworn/kindred` depends on it. The lockfile currently resolves the dep via
+  `@forgesworn/kenspeckle` depends on it. The lockfile currently resolves the dep via
   `file:../tessera-kit/forgesworn-tessera-kit-0.1.0.tgz` for local development; once
   `@forgesworn/tessera-kit` is published, **repoint the lockfile off `file:`** (run
-  `npm install` against the registry) before publishing `kindred`.
+  `npm install` against the registry) before publishing `kenspeckle`.
 - **signet-me migration caveat (`./bond`).** With **default** opts `bondWords` uses
   namespace `'kindred:bond'`, so its words **differ** from signet-app's `signet-me`
   (`'signet:me'`) — a naive migration silently changes a contact's verification
@@ -145,8 +155,8 @@ layered over `@forgesworn/tessera-kit`.
   `{ namespace: 'signet:me' }` to `bondWords` and
   `{ namespace: 'signet:me', tolerance: 1 }` to `verifyBondWord`; both peers must
   upgrade together or use these opts during rollout. See `PROTOCOL.md` §2.1.
-- **Relationship layer only.** kindred owns relationships, personas, and Nostr
+- **Relationship layer only.** kenspeckle owns relationships, personas, and Nostr
   *kinds*; the relationship-agnostic filter primitive lives in
   `@forgesworn/tessera-kit`.
 
-[0.1.0]: https://github.com/forgesworn/kindred/releases/tag/v0.1.0
+[0.1.0]: https://github.com/forgesworn/kenspeckle/releases/tag/v0.1.0

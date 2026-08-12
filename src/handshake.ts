@@ -1,10 +1,10 @@
-// kindred (`./handshake` subpath) — the handshake wire format (spec §5.1).
+// kenspeckle (`./handshake` subpath) — the handshake wire format (spec §5.1).
 //
 // The handshake is the first message of a kith bond: I present the persona pubkey I'm bonding as,
 // a fresh nonce (freshness for the spoken-token ceremony counter seed), an optional display name,
 // and — optionally, consensually — a list of additional personas I'm disclosing to this peer.
 //
-// This is a STANDALONE subpath entry (consumers `import { ... } from 'kindred/handshake'`); it is
+// This is a STANDALONE subpath entry (consumers `import { ... } from 'kenspeckle/handshake'`); it is
 // deliberately NOT re-exported from the `.` barrel. It has no dependency on the relationship model.
 //
 // `buildHandshakePayload` stamps `v:1` and UTF-8-encodes the JSON. `parseHandshakePayload` hardens

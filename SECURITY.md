@@ -1,23 +1,23 @@
 # Security Policy
 
-kindred makes **narrow, precise** claims and refuses the broad ones. This document
+kenspeckle makes **narrow, precise** claims and refuses the broad ones. This document
 is the honest posture (spec §4, §6, §9, §10). Read it before building on the
 library — several intuitive-sounding guarantees are **deliberately not made**, and
 treating the kit as if they were would create real harm (a doxxing primitive in
 discovery, an impersonation hole in ken).
 
-kindred is a pure-computation library: no storage, no UI, no graph traversal. Its
+kenspeckle is a pure-computation library: no storage, no UI, no graph traversal. Its
 only network touch is `pinKenFromNip05` / `resolveKen` fetching a `.well-known`
 file over HTTPS via an **injected** `fetch`.
 
 ## The posture, stated honestly
 
-### 1. Persona-scoping is a consumer obligation kindred ASSISTS but cannot guarantee
+### 1. Persona-scoping is a consumer obligation kenspeckle ASSISTS but cannot guarantee
 
 Every entry carries an `ownerPubkey` — one of MY `nsec-tree` persona keys — so a
 contact is recorded under a specific persona of mine, never globally. This is the
 anti-correlation invariant ("your work contact must not surface on your gaming
-server"). kindred enforces it **where it can**:
+server"). kenspeckle enforces it **where it can**:
 
 - `discoverPresent` requires an explicit `ownerPubkey` and **throws on
   mixed-persona input** — every entry must share the declared owner. Mixing
@@ -27,10 +27,10 @@ server"). kindred enforces it **where it can**:
 - `PrivateAnnotations` is structurally excluded from every `serialize*` / wire
   input type (see §2).
 
-But kindred **owns no storage**, so it **cannot fully guarantee** that the consumer
+But kenspeckle **owns no storage**, so it **cannot fully guarantee** that the consumer
 keeps personas separated at rest, scopes its IndexedDB correctly, or never mixes
 owners upstream of a call. **Persona-scoping is ultimately a consumer obligation
-the primitive assists with — not a guarantee kindred can make.**
+the primitive assists with — not a guarantee kenspeckle can make.**
 
 ### 2. Private annotations are NEVER serialised onto a wire
 
@@ -50,7 +50,7 @@ wire. This is enforced two ways:
 (`exportEntriesEncrypted`), which **includes** annotations because it is the
 holder's sealed copy, encrypted with XChaCha20-Poly1305 under a 32-byte key the
 consumer supplies. Only a holder of that key can read the blob (managing the key's
-lifecycle is the consumer's job — kindred only takes it as a parameter). Per spec §2
+lifecycle is the consumer's job — kenspeckle only takes it as a parameter). Per spec §2
 / §12.1 this is explicitly **not a graph disclosure** — it is the user backing up
 their own roster, not exporting edges to a third party. Decryption is authenticated:
 a wrong key or any tampered byte throws (Poly1305 tag failure), never silently
@@ -158,7 +158,7 @@ server's next rebuild). The honest limits:
   confine probing to current members and does **not** survive a salt leak.
 
 **Real member privacy comes from per-context personas** (a different key per server,
-via `nsec-tree`) and not joining open servers — not from keying. kindred provides
+via `nsec-tree`) and not joining open servers — not from keying. kenspeckle provides
 the persona escape hatch; it does not make discovery anonymous.
 
 ### 8. Zeroization honesty
@@ -169,7 +169,7 @@ Private-key **byte copies** created internally (`deriveBondSecret`,
 internally are **immutable / not reachable** from the call site and **cannot be
 zeroized** here. A private key passed in as a JS **string** is likewise immutable
 and persists until garbage-collected. So zeroization is **best-effort on the byte
-copies only** — kindred does **not** claim full zeroization. A future Rust/WASM port
+copies only** — kenspeckle does **not** claim full zeroization. A future Rust/WASM port
 should take secrets as **bytes** and wipe the scalar and point deterministically.
 
 ### 9. Input-validation discipline
@@ -183,7 +183,7 @@ A non-JSON blob surfaces a clear `Error`, never a raw `SyntaxError`.
 
 **Attacker-controlled display strings are returned VERBATIM** — `displayName`
 (handshake, entries) and any site/persona label are **not** sanitized or truncated
-by kindred. Sanitizing at the parse boundary would mangle legitimate names and give
+by kenspeckle. Sanitizing at the parse boundary would mangle legitimate names and give
 a false sense of safety. **The consumer truncates/escapes at the point of display.**
 
 ## What is genuinely removed (the honest upside)
@@ -201,7 +201,7 @@ We do not claim otherwise.
 
 ## Reporting a vulnerability
 
-If you discover a security vulnerability in kindred, please report it responsibly:
+If you discover a security vulnerability in kenspeckle, please report it responsibly:
 
 1. **Do not** open a public GitHub issue.
 2. Email **thecryptodonkey@proton.me** with a description, steps to reproduce, and

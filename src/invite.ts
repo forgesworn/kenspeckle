@@ -1,4 +1,4 @@
-// kindred (`./invite` subpath) — join invite + single-attestation anti-sybil verify (spec §9).
+// kenspeckle (`./invite` subpath) — join invite + single-attestation anti-sybil verify (spec §9).
 //
 // Two surfaces, one subpath:
 //
@@ -13,15 +13,15 @@
 //       `kindred-bond` attestation (the kind-31000 event K-4's `buildBondAttestation` builds + the
 //       caller finalizes) and returns `{ ok, attesterPubHex, subjectPubHex }`. Collective/guild
 //       sybil-resistance — counting a member's attestations into a set of DISTINCT verified humans —
-//       lives in the CONSUMING APP. Kindred provides the brick + per-attestation verification, but
+//       lives in the CONSUMING APP. Kenspeckle provides the brick + per-attestation verification, but
 //       NO graph traversal, NO counting (that would breach the §2 non-goals).
 //
-// This is a STANDALONE subpath entry (`import { ... } from 'kindred/invite'`); it is deliberately NOT
+// This is a STANDALONE subpath entry (`import { ... } from 'kenspeckle/invite'`); it is deliberately NOT
 // re-exported from the `.` barrel.
 //
 // --- Canonical invite signing form (DOCUMENT VERBATIM in PROTOCOL.md, K-8) ------------------------
 //
-//   digest = SHA-256( utf8( `kindred-invite:v1:${namespace}:${serverId}:${inviterPubkey}:${nonce}:${expiresAt ?? ''}` ) )
+//   digest = SHA-256( utf8( `kenspeckle-invite:v1:${namespace}:${serverId}:${inviterPubkey}:${nonce}:${expiresAt ?? ''}` ) )
 //   sig    = bytesToHex( schnorr.sign( digest, hexToBytes(inviterPriv) ) )
 //
 // `serverId` is free-form and MAY contain colons. That is safe here — UNLIKE tessera-kit's capability
@@ -59,7 +59,7 @@ export interface JoinInvite {
 }
 
 /** Max accepted blob size, in bytes. Enforced BEFORE decode/parse (cheap DoS guard). Mirrors the
- *  8192-byte cap used across kindred's other untrusted-input parsers (handshake) + signet-app. */
+ *  8192-byte cap used across kenspeckle's other untrusted-input parsers (handshake) + signet-app. */
 const MAX_BLOB_BYTES = 8192
 
 /** Exactly 64 hex chars = 32 bytes (case-insensitive; lowercased on the way out). */
@@ -83,7 +83,7 @@ function inviteDigest(p: {
   nonce: string
   expiresAt?: number
 }): Uint8Array {
-  const canonical = `kindred-invite:v1:${p.namespace}:${p.serverId}:${p.inviterPubkey}:${p.nonce}:${p.expiresAt ?? ''}`
+  const canonical = `kenspeckle-invite:v1:${p.namespace}:${p.serverId}:${p.inviterPubkey}:${p.nonce}:${p.expiresAt ?? ''}`
   return sha256(utf8ToBytes(canonical))
 }
 
@@ -262,7 +262,7 @@ export function parseJoinInvite(blob: Uint8Array, now?: number): JoinInvite {
  * attester (`event.pubkey` — the signer) and the subject (the `p`-tag value).
  *
  * This is per-attestation verification ONLY. Counting a member's attestations into a set of DISTINCT
- * verified humans (the collective/guild sybil-resistance of §9.2) is the CONSUMING APP's job — kindred
+ * verified humans (the collective/guild sybil-resistance of §9.2) is the CONSUMING APP's job — kenspeckle
  * does NO graph traversal and NO counting here (that would breach the §2 non-goals).
  *
  * @param event An (untrusted) Nostr event, ideally wire-shaped (a fresh JSON object). Note nostr-tools

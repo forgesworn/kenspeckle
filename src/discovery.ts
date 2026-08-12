@@ -1,7 +1,7 @@
-// kindred ./discovery — local presence intersection over a sibling `tessera-kit` membership filter,
+// kenspeckle ./discovery — local presence intersection over a sibling `tessera-kit` membership filter,
 // plus signed Nostr filter publications (kind 30444) and the opt-out request (kind 30445).
 //
-// Spec: signet-plans/docs/plans/2026-06-02-kindred-primitive-spec.md §8 (discovery) + §11 (opt-out).
+// Spec: signet-plans/docs/plans/2026-06-02-kenspeckle-primitive-spec.md §8 (discovery) + §11 (opt-out).
 // Publication shape matches tessera-kit PROTOCOL.md §6 byte-for-byte (kind 30444, d-tag
 // `kindred:members:<namespace>:<serverId>`, indexable `['n', namespace]` tag, base64-of-KFLT-blob
 // content). The `namespace` is reverse-DNS-style and MUST be colon-free (the d-tag splits on the
@@ -9,24 +9,24 @@
 // colons (it is the remainder). The Nostr event signature (NIP-01) and the in-blob Schnorr provenance
 // signature (§4) are DISTINCT; `parseFilterPublication` verifies BOTH before returning anything
 // trustable. The base64 publication mechanics are delegated to tessera-kit's generic `./nostr`
-// builder/decoder so the wire-format lives in ONE place (kindred supplies only its kind + tags).
+// builder/decoder so the wire-format lives in ONE place (kenspeckle supplies only its kind + tags).
 //
 // This layer holds no state, opens no sockets, and never enumerates a server's membership — it only
 // tests the consumer's OWN contacts against a published filter (presence, not a member list).
 
 import { parseFilter, testMembership, memberKey, verifyFilterBlob, type MembershipFilter } from '@forgesworn/tessera-kit'
 // Publication MECHANICS (base64 assembly + length-capped decode) are delegated to tessera-kit's
-// relationship-agnostic `./nostr` core, so the wire-format lives in ONE place. kindred still owns the
-// kind + d/n/epoch/keyed tags and passes them in. Aliased to avoid clashing with kindred's own
-// `buildFilterPublication` (the kindred-specific wrapper exported from this module).
+// relationship-agnostic `./nostr` core, so the wire-format lives in ONE place. kenspeckle still owns the
+// kind + d/n/epoch/keyed tags and passes them in. Aliased to avoid clashing with kenspeckle's own
+// `buildFilterPublication` (the kenspeckle-specific wrapper exported from this module).
 import { buildFilterPublication as buildPublicationTemplate, decodeFilterPublicationContent } from '@forgesworn/tessera-kit/nostr'
 import { verifyEvent } from 'nostr-tools/pure'
 import { schnorr } from '@noble/curves/secp256k1.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import type { KindredEntry, EventTemplate, NostrEvent, NostrFilter } from './types.js'
 
-// `parseFilter` is re-exported only so callers can `import { parseFilter } from 'kindred/discovery'`
-// without reaching past kindred into tessera-kit; kindred's own functions take a parsed filter.
+// `parseFilter` is re-exported only so callers can `import { parseFilter } from 'kenspeckle/discovery'`
+// without reaching past kenspeckle into tessera-kit; kenspeckle's own functions take a parsed filter.
 export { parseFilter }
 
 /** Addressable Nostr kind for a published membership filter (provisional; not NIP-registered).
@@ -44,7 +44,7 @@ const HEX64 = /^[0-9a-f]{64}$/
  *  publication can be rejected BEFORE base64-decoding an oversized payload into memory. */
 const MAX_BLOB_BYTES = 64 * 1024 * 1024
 
-/** Current unix time in whole seconds (the kindred event `created_at` convention). */
+/** Current unix time in whole seconds (the kenspeckle event `created_at` convention). */
 function nowSec(): number {
   return Math.floor(Date.now() / 1000)
 }
@@ -130,11 +130,11 @@ export function disclosureFor(opts: { salt?: string }): DiscoveryDisclosure {
  *   boundary `parseFilterPublication` splits on (the first colon after the prefix), mis-parsing the
  *   two fields. (serverId MAY contain colons — it is the unambiguous remainder, e.g. a
  *   `wss://host:port/path` URL.) tessera-kit's capability already guards its own serverId this way;
- *   this mirrors it for kindred's namespace.
+ *   this mirrors it for kenspeckle's namespace.
  * - `['n', namespace]` is the single-letter relay-indexable tag the aggregator queries (`#n`).
  *
  * The base64-of-blob CONTENT and `EventTemplate` assembly are delegated to tessera-kit's generic
- * `./nostr` publisher (`buildPublicationTemplate`) so the wire mechanics live in ONE place; kindred
+ * `./nostr` publisher (`buildPublicationTemplate`) so the wire mechanics live in ONE place; kenspeckle
  * supplies only its kind + tags. Output is byte-identical to the previous hand-rolled form.
  */
 export function buildFilterPublication(p: {

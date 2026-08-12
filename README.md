@@ -1,9 +1,9 @@
-# @forgesworn/kindred
+# @forgesworn/kenspeckle
 
 **Verified relationships across three social distances — `kin` (family), `kith` (mutually verified), `ken` (one-way recognised) — with the handshake, bond ceremony, ken trust-store, local presence discovery, and invite flows. Protocol-neutral, pure functions, no storage, no graph traversal.**
 
-[![npm](https://img.shields.io/npm/v/%40forgesworn%2Fkindred)](https://www.npmjs.com/package/%40forgesworn%2Fkindred)
-[![licence](https://img.shields.io/npm/l/%40forgesworn%2Fkindred)](https://github.com/forgesworn/kindred/blob/main/LICENSE)
+[![npm](https://img.shields.io/npm/v/%40forgesworn%2Fkenspeckle)](https://www.npmjs.com/package/%40forgesworn%2Fkenspeckle)
+[![licence](https://img.shields.io/npm/l/%40forgesworn%2Fkenspeckle)](https://github.com/forgesworn/kenspeckle/blob/main/LICENSE)
 ![TypeScript](https://img.shields.io/badge/TypeScript-native-blue)
 ![ESM only](https://img.shields.io/badge/module-ESM--only-informational)
 
@@ -17,15 +17,23 @@ each other out-of-band by speaking short rotating words from a shared secret) an
 **live key-control challenge** (a public figure proves an in-game account really
 holds the key you pinned).
 
-kindred is those primitives as plain data + pure functions. It does **not** store
+kenspeckle is those primitives as plain data + pure functions. It does **not** store
 anything, render anything, or traverse a graph (those are explicit non-goals). It
 holds relationships, derives ceremony words, pins and challenges recognised keys,
 and tests a user's own contacts against a server's published presence filter
 (via the sibling [`@forgesworn/tessera-kit`](https://github.com/forgesworn/tessera-kit)) —
 **locally**, never uploading contacts.
 
+> **Naming.** *kenspeckle* (Scots: **easily recognised, known by sight**) was
+> developed as `@forgesworn/kindred` and renamed before first publish — "Kindred"
+> is now the ForgeSworn app-suite brand. The **wire protocol keeps the historical
+> `kindred` naming, frozen**: `'kindred:bond'`, `'kindred:members:'`,
+> `'kindred-bond'`, kinds 30444/30445, and the `KINDRED_*` / `KindredEntry` /
+> `KindredTier` identifiers are unchanged — renaming them would change every
+> deployed bond word and published filter.
+
 > **Honest scope (read [SECURITY.md](./SECURITY.md)):** persona-scoping is a
-> consumer obligation kindred *assists but cannot guarantee* (no storage). NIP-05 is
+> consumer obligation kenspeckle *assists but cannot guarantee* (no storage). NIP-05 is
 > a DNS/TLS/HTTP **TOFU** anchor, **not** key-continuity. `attributeSignature` alone
 > is **replayable** — impersonation resistance needs `verifyKeyControl` against a
 > fresh nonce. Private annotations are **never** serialised. A forged presence filter
@@ -34,28 +42,28 @@ and tests a user's own contacts against a server's published presence filter
 ## Install
 
 ```bash
-npm i @forgesworn/kindred
+npm i @forgesworn/kenspeckle
 ```
 
-ESM-only, Node ≥ 22. `nostr-tools` is a **peer** dependency (so you and kindred
+ESM-only, Node ≥ 22. `nostr-tools` is a **peer** dependency (so you and kenspeckle
 share one event type) — install it alongside.
 
 ### The `@forgesworn/tessera-kit` sibling constraint (read this before publishing)
 
-kindred depends on [`@forgesworn/tessera-kit`](https://github.com/forgesworn/tessera-kit), a
+kenspeckle depends on [`@forgesworn/tessera-kit`](https://github.com/forgesworn/tessera-kit), a
 sibling that **is not yet on npm**. For **local development**, build and pack it,
 then install the tarball:
 
 ```bash
 cd ../tessera-kit && npm pack          # produces forgesworn-tessera-kit-0.1.0.tgz
-cd ../kindred && npm install ../tessera-kit/forgesworn-tessera-kit-0.1.0.tgz
+cd ../kenspeckle && npm install ../tessera-kit/forgesworn-tessera-kit-0.1.0.tgz
 ```
 
-The lockfile then carries a `file:` path to the sibling. **To publish kindred,
+The lockfile then carries a `file:` path to the sibling. **To publish kenspeckle,
 `@forgesworn/tessera-kit` must be published to npm first — do NOT ship a `file:` dep.** A
 `file:` link in a published package masks unpublished sibling changes and breaks
 external installs (a hard-won signet-app lesson). Publish the sibling, repoint the
-dependency to the npm version, then publish kindred.
+dependency to the npm version, then publish kenspeckle.
 
 ## Quick start
 
@@ -66,8 +74,8 @@ each other short rotating words. The word I *speak* differs from the word I *exp
 (directional — the listener can't parrot it back).
 
 ```typescript
-import { buildHandshakePayload, parseHandshakePayload } from '@forgesworn/kindred/handshake'
-import { deriveBondSecret, bondWords, verifyBondWord } from '@forgesworn/kindred/bond'
+import { buildHandshakePayload, parseHandshakePayload } from '@forgesworn/kenspeckle/handshake'
+import { deriveBondSecret, bondWords, verifyBondWord } from '@forgesworn/kenspeckle/bond'
 
 // (1) I present my persona + a fresh nonce over QR/NFC/relay; they parse it.
 const blob = buildHandshakePayload({ pubkey: myPubHex, nonce: my16ByteHexNonce })
@@ -99,7 +107,7 @@ To bind an in-game account to the real key, issue a **fresh nonce** and verify t
 claimant signs it.
 
 ```typescript
-import { pinKenFromNip05, buildKeyControlChallenge, verifyKeyControl } from '@forgesworn/kindred/ken'
+import { pinKenFromNip05, buildKeyControlChallenge, verifyKeyControl } from '@forgesworn/kenspeckle/ken'
 
 // Pin via NIP-05 — refuses to pin unless the name resolves (TOFU; HTTPS-only fetch).
 const entry = await pinKenFromNip05('mrbeast@example.com', myGamingPersonaPubHex, fetch)
@@ -119,7 +127,7 @@ contacts — scoped to one persona.
 
 ```typescript
 import { parseFilter, verifyFilterBlob } from '@forgesworn/tessera-kit'
-import { discoverPresent, parseFilterPublication } from '@forgesworn/kindred/discovery'
+import { discoverPresent, parseFilterPublication } from '@forgesworn/kenspeckle/discovery'
 
 // Pull the kind-30444 publication; verify the Nostr sig + decode (returns null on any failure).
 const pub = parseFilterPublication(rawWireEvent) // pass the RAW event — not a spread-mutated one
@@ -247,10 +255,10 @@ kind/tag shapes, build/parse asymmetry) are in **[PROTOCOL.md](./PROTOCOL.md)**.
 
 ## Security
 
-kindred makes **narrow, honest** claims — read **[SECURITY.md](./SECURITY.md)**. The
+kenspeckle makes **narrow, honest** claims — read **[SECURITY.md](./SECURITY.md)**. The
 short version:
 
-- **Persona-scoping is a consumer obligation** kindred assists (`discoverPresent`
+- **Persona-scoping is a consumer obligation** kenspeckle assists (`discoverPresent`
   enforces single-owner input) but **cannot guarantee** (no storage).
 - **Private annotations are never serialised** (type-level + runtime); they ARE in
   the user's own encrypted backup (allowed — not a graph disclosure).
@@ -267,17 +275,17 @@ short version:
 
 ## Toolkit
 
-kindred is the relationships brick of the **Forgesworn / Signet** ecosystem. It
+kenspeckle is the relationships brick of the **Forgesworn / Signet** ecosystem. It
 composes:
 
 - [`@forgesworn/tessera-kit`](https://github.com/forgesworn/tessera-kit) — the non-enumerable
-  membership-presence filter `kindred/discovery` is a thin layer over.
+  membership-presence filter `kenspeckle/discovery` is a thin layer over.
 - [`spoken-token`](https://github.com/forgesworn/spoken-token) — the directional
   verification words the bond ceremony speaks.
 - [`nostr-attestations`](https://github.com/forgesworn/nostr-attestations) — the
   co-signed bond assertions (kind-31000).
 - [`nsec-tree`](https://github.com/forgesworn/nsec-tree) — hierarchical persona key
-  derivation (the `ownerPubkey` scoping; kindred needs only the type relationship).
+  derivation (the `ownerPubkey` scoping; kenspeckle needs only the type relationship).
 
 Consumed by **signet-app** (the user-facing identity app): it maps its `Contact`
 record onto `KinEntry`/`KithEntry`/`ken`, persists `KindredEntry` in IndexedDB, and

@@ -1,17 +1,17 @@
-# Contributing to kindred
+# Contributing to kenspeckle
 
 ## Setup
 
 ```bash
-git clone https://github.com/forgesworn/kindred.git
-cd kindred
+git clone https://github.com/forgesworn/kenspeckle.git
+cd kenspeckle
 npm install
 ```
 
-> **Local dependency note.** `@forgesworn/kindred` depends on
+> **Local dependency note.** `@forgesworn/kenspeckle` depends on
 > `@forgesworn/tessera-kit`. Until that package is published to npm, the lockfile
 > resolves it from a local tarball
-> (`cd ../tessera-kit && npm pack && cd ../kindred && npm install ../tessera-kit/forgesworn-tessera-kit-0.1.0.tgz`).
+> (`cd ../tessera-kit && npm pack && cd ../kenspeckle && npm install ../tessera-kit/forgesworn-tessera-kit-0.1.0.tgz`).
 > Once `@forgesworn/tessera-kit` is on npm, repoint the lockfile off `file:` with a
 > plain `npm install`.
 
@@ -41,7 +41,7 @@ src/
   index.ts      — `.` barrel (model + local ops only; the five subpaths are deliberately NOT re-exported)
 ```
 
-The five conceptual subpaths (`@forgesworn/kindred/handshake`, `/bond`, `/ken`,
+The five conceptual subpaths (`@forgesworn/kenspeckle/handshake`, `/bond`, `/ken`,
 `/discovery`, `/invite`) are imported via their own export so a consumer that only
 needs, say, the bond ceremony does not pull the discovery / tessera-kit graph.
 Keeping them off the `.` barrel is the load-bearing tree-shaking + dependency-isolation

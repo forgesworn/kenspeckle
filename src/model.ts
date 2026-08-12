@@ -1,4 +1,4 @@
-// kindred — `.` surface local relationship operations (spec §4, §12.1).
+// kenspeckle — `.` surface local relationship operations (spec §4, §12.1).
 //
 // Pure functions over plain `KindredEntry` data. No storage, no UI, no graph traversal.
 //
@@ -35,7 +35,7 @@ export function scopeToPersona(
 }
 
 /** Throw unless `personaPubkeyHex` is one of MY persona leaves (case-insensitive membership).
- *  Consumer supplies `myLeaves` (hex) from nsec-tree — kindred makes no runtime nsec-tree call. */
+ *  Consumer supplies `myLeaves` (hex) from nsec-tree — kenspeckle makes no runtime nsec-tree call. */
 export function assertOwnedPersona(personaPubkeyHex: string, myLeaves: string[]): void {
   const needle = personaPubkeyHex.toLowerCase()
   if (!myLeaves.some((l) => l.toLowerCase() === needle)) {

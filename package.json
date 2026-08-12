@@ -1,5 +1,5 @@
 {
-  "name": "@forgesworn/kindred",
+  "name": "@forgesworn/kenspeckle",
   "version": "0.1.0",
   "description": "Verified relationships across three social distances — kin (family), kith (mutually verified), ken (one-way recognised) — with handshake, bond ceremony, ken trust-store, and local presence discovery.",
   "type": "module",
@@ -95,12 +95,12 @@
     "type": "lightning",
     "url": "lightning:profusemeat89@walletofsatoshi.com"
   },
-  "homepage": "https://github.com/forgesworn/kindred#readme",
+  "homepage": "https://github.com/forgesworn/kenspeckle#readme",
   "bugs": {
-    "url": "https://github.com/forgesworn/kindred/issues"
+    "url": "https://github.com/forgesworn/kenspeckle/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/forgesworn/kindred.git"
+    "url": "git+https://github.com/forgesworn/kenspeckle.git"
   }
 }

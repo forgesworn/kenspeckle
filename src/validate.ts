@@ -1,4 +1,4 @@
-// kindred — shared runtime field guards for untrusted `KindredEntry` input.
+// kenspeckle — shared runtime field guards for untrusted `KindredEntry` input.
 //
 // One validator backs both `parseEntry` (wire form — annotations stripped) and the encrypted
 // self-backup importer (annotations legitimately preserved). The `allowAnnotations` flag is the
@@ -45,7 +45,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 function reqHex64(o: Record<string, unknown>, field: string): string {
   const v = o[field]
   if (typeof v !== 'string' || !HEX64.test(v)) {
-    throw new Error(`kindred entry: ${field} must be 64 hex chars`)
+    throw new Error(`kenspeckle entry: ${field} must be 64 hex chars`)
   }
   // Lowercase-normalize on parse. A restored/imported backup can carry UPPERCASE hex; nostr-tools
   // always emits lowercase `event.pubkey`, so an uppercase `pubkey`/`ownerPubkey`/`sharedSecret`
@@ -56,7 +56,7 @@ function reqHex64(o: Record<string, unknown>, field: string): string {
 function reqFiniteNumber(o: Record<string, unknown>, field: string): number {
   const v = o[field]
   if (typeof v !== 'number' || !Number.isFinite(v)) {
-    throw new Error(`kindred entry: ${field} must be a finite number`)
+    throw new Error(`kenspeckle entry: ${field} must be a finite number`)
   }
   return v
 }
@@ -64,40 +64,40 @@ function reqFiniteNumber(o: Record<string, unknown>, field: string): number {
 function optString(o: Record<string, unknown>, field: string): string | undefined {
   const v = o[field]
   if (v === undefined) return undefined
-  if (typeof v !== 'string') throw new Error(`kindred entry: ${field} must be a string`)
+  if (typeof v !== 'string') throw new Error(`kenspeckle entry: ${field} must be a string`)
   return v
 }
 
 /** Exported so the companion RETURN rail validates claimed provenance against the SAME allow-list.
  *  One `KEN_SOURCES` set in the codebase — a second copy is how the two silently drift apart. */
 export function validateProvenance(v: unknown): KenProvenance {
-  if (!isRecord(v)) throw new Error('kindred ken: provenance must be an object')
+  if (!isRecord(v)) throw new Error('kenspeckle ken: provenance must be an object')
   const source = v.source
   if (typeof source !== 'string' || !KEN_SOURCES.has(source)) {
-    throw new Error('kindred ken: provenance.source invalid')
+    throw new Error('kenspeckle ken: provenance.source invalid')
   }
   if (typeof v.locator !== 'string' || v.locator.length === 0) {
-    throw new Error('kindred ken: provenance.locator must be a non-empty string')
+    throw new Error('kenspeckle ken: provenance.locator must be a non-empty string')
   }
   if (typeof v.confirmedAt !== 'number' || !Number.isFinite(v.confirmedAt)) {
-    throw new Error('kindred ken: provenance.confirmedAt must be a finite number')
+    throw new Error('kenspeckle ken: provenance.confirmedAt must be a finite number')
   }
   return { source: source as KenProvenance['source'], locator: v.locator, confirmedAt: v.confirmedAt }
 }
 
 function validateRotation(v: unknown): KenRotation {
-  if (!isRecord(v)) throw new Error('kindred ken: rotation must be an object')
+  if (!isRecord(v)) throw new Error('kenspeckle ken: rotation must be an object')
   if (typeof v.newPubkey !== 'string' || !HEX64.test(v.newPubkey)) {
-    throw new Error('kindred ken: rotation.newPubkey must be 64 hex')
+    throw new Error('kenspeckle ken: rotation.newPubkey must be 64 hex')
   }
   if (typeof v.observedAt !== 'number' || !Number.isFinite(v.observedAt)) {
-    throw new Error('kindred ken: rotation.observedAt must be a finite number')
+    throw new Error('kenspeckle ken: rotation.observedAt must be a finite number')
   }
   if (typeof v.via !== 'string' || !KEN_ROTATION_VIA.has(v.via)) {
-    throw new Error('kindred ken: rotation.via invalid')
+    throw new Error('kenspeckle ken: rotation.via invalid')
   }
   if (typeof v.accepted !== 'boolean') {
-    throw new Error('kindred ken: rotation.accepted must be a boolean')
+    throw new Error('kenspeckle ken: rotation.accepted must be a boolean')
   }
   const out: KenRotation = {
     // Lowercase-normalize (same reason as reqHex64: must strict-equal nostr-tools' lowercase pubkey).
@@ -108,7 +108,7 @@ function validateRotation(v: unknown): KenRotation {
   }
   if (v.announcementEventId !== undefined) {
     if (typeof v.announcementEventId !== 'string') {
-      throw new Error('kindred ken: rotation.announcementEventId must be a string')
+      throw new Error('kenspeckle ken: rotation.announcementEventId must be a string')
     }
     out.announcementEventId = v.announcementEventId
   }
@@ -116,24 +116,24 @@ function validateRotation(v: unknown): KenRotation {
 }
 
 function validateAnnotations(v: unknown): PrivateAnnotations {
-  if (!isRecord(v)) throw new Error('kindred entry: annotations must be an object')
+  if (!isRecord(v)) throw new Error('kenspeckle entry: annotations must be an object')
   const out: PrivateAnnotations = {}
   if (v.groupId !== undefined) {
-    if (typeof v.groupId !== 'string') throw new Error('kindred entry: annotations.groupId must be a string')
+    if (typeof v.groupId !== 'string') throw new Error('kenspeckle entry: annotations.groupId must be a string')
     // groupId is a hex-shaped recall id (`linkForRecall` emits `bytesToHex(randomBytes(8))`);
     // lowercase-normalize so a restored uppercase value still groups/compares correctly.
     out.groupId = v.groupId.toLowerCase()
   }
   if (v.label !== undefined) {
-    if (typeof v.label !== 'string') throw new Error('kindred entry: annotations.label must be a string')
+    if (typeof v.label !== 'string') throw new Error('kenspeckle entry: annotations.label must be a string')
     out.label = v.label
   }
   if (v.note !== undefined) {
-    if (typeof v.note !== 'string') throw new Error('kindred entry: annotations.note must be a string')
+    if (typeof v.note !== 'string') throw new Error('kenspeckle entry: annotations.note must be a string')
     out.note = v.note
   }
   if (v.blocked !== undefined) {
-    if (typeof v.blocked !== 'boolean') throw new Error('kindred entry: annotations.blocked must be a boolean')
+    if (typeof v.blocked !== 'boolean') throw new Error('kenspeckle entry: annotations.blocked must be a boolean')
     out.blocked = v.blocked
   }
   return out
@@ -146,10 +146,10 @@ function validateAnnotations(v: unknown): PrivateAnnotations {
  *   (encrypted self-backup, §6.7); when false annotations are dropped (wire form).
  */
 export function validateEntryShape(raw: unknown, allowAnnotations: boolean): KindredEntry {
-  if (!isRecord(raw)) throw new Error('kindred entry: not an object')
+  if (!isRecord(raw)) throw new Error('kenspeckle entry: not an object')
   const tier = raw.tier
   if (tier !== 'kin' && tier !== 'kith' && tier !== 'ken') {
-    throw new Error('kindred entry: tier must be kin | kith | ken')
+    throw new Error('kenspeckle entry: tier must be kin | kith | ken')
   }
 
   const pubkey = reqHex64(raw, 'pubkey')
@@ -169,7 +169,7 @@ export function validateEntryShape(raw: unknown, allowAnnotations: boolean): Kin
     if (tier === 'kin') {
       const relationship = raw.relationship
       if (typeof relationship !== 'string' || !KIN_RELATIONSHIPS.has(relationship)) {
-        throw new Error('kindred kin: relationship invalid')
+        throw new Error('kenspeckle kin: relationship invalid')
       }
       const entry: KinEntry = {
         tier: 'kin',
@@ -217,13 +217,13 @@ export function validateEntryShape(raw: unknown, allowAnnotations: boolean): Kin
   if (nip05 !== undefined) entry.nip05 = nip05
   if (raw.lastResolvedAt !== undefined) {
     if (typeof raw.lastResolvedAt !== 'number' || !Number.isFinite(raw.lastResolvedAt)) {
-      throw new Error('kindred ken: lastResolvedAt must be a finite number')
+      throw new Error('kenspeckle ken: lastResolvedAt must be a finite number')
     }
     entry.lastResolvedAt = raw.lastResolvedAt
   }
   if (raw.previousPubkeys !== undefined) {
     if (!Array.isArray(raw.previousPubkeys) || !raw.previousPubkeys.every((p) => typeof p === 'string' && HEX64.test(p))) {
-      throw new Error('kindred ken: previousPubkeys must be an array of 64-hex strings')
+      throw new Error('kenspeckle ken: previousPubkeys must be an array of 64-hex strings')
     }
     // Lowercase each element (same equality-safety reason as reqHex64).
     entry.previousPubkeys = (raw.previousPubkeys as string[]).map((p) => p.toLowerCase())
@@ -238,7 +238,7 @@ export function validateEntryShape(raw: unknown, allowAnnotations: boolean): Kin
   // round-trips faithfully rather than silently mutating the caller's shape.
   if (raw.corroborations !== undefined) {
     if (!Array.isArray(raw.corroborations)) {
-      throw new Error('kindred ken: corroborations must be an array')
+      throw new Error('kenspeckle ken: corroborations must be an array')
     }
     // Bounded, unlike `previousPubkeys`. That precedent is uncapped but its elements are fixed
     // 64-char hex, so its worst case is bounded per element; a corroboration carries an unbounded
@@ -246,12 +246,12 @@ export function validateEntryShape(raw: unknown, allowAnnotations: boolean): Kin
     // restored backup or a synced entry. The cap is far above any real ken (that would be 64
     // separate re-checks of one key) and this is a NEW field, so no stored entry can trip it.
     if (raw.corroborations.length > MAX_CORROBORATIONS) {
-      throw new Error(`kindred ken: at most ${MAX_CORROBORATIONS} corroborations`)
+      throw new Error(`kenspeckle ken: at most ${MAX_CORROBORATIONS} corroborations`)
     }
     entry.corroborations = raw.corroborations.map(validateProvenance)
   }
   if (raw.revoked !== undefined) {
-    if (typeof raw.revoked !== 'boolean') throw new Error('kindred ken: revoked must be a boolean')
+    if (typeof raw.revoked !== 'boolean') throw new Error('kenspeckle ken: revoked must be a boolean')
     entry.revoked = raw.revoked
   }
   return entry

@@ -1,4 +1,4 @@
-// kindred (`./ken` subpath) — the ONE-WAY recognition trust-store (spec §6.1–§6.4).
+// kenspeckle (`./ken` subpath) — the ONE-WAY recognition trust-store (spec §6.1–§6.4).
 //
 // `ken` is recognising a public key you did NOT bond with: a public figure, an organisation, a
 // NIP-05 handle. There is no shared secret and no mutual ceremony — recognition is one-directional.
@@ -19,7 +19,7 @@
 //   4. ROTATE / REVOKE safely — `resolveKen` (propose-not-flip), `acceptKenRotation` (explicit move),
 //      `revokeKen` (fail-closed), `dropKen` (consumer deletes the record).
 //
-// This is a STANDALONE subpath entry (`import { ... } from 'kindred/ken'`); it is deliberately NOT
+// This is a STANDALONE subpath entry (`import { ... } from 'kenspeckle/ken'`); it is deliberately NOT
 // re-exported from the `.` barrel.
 //
 // ── NIP-05 HONESTY (security model — also stated in SECURITY.md) ──────────────────────────────────
@@ -56,7 +56,7 @@ const CHALLENGE_NONCE = /^[0-9a-f]{64}$/
  *  guard is that BOTH sides are non-empty and there is exactly one `@`. */
 const NIP05 = /^[a-z0-9\-_.]+@[a-z0-9\-_.]+$/i
 
-/** Current unix time in whole seconds (the kindred timestamp convention). */
+/** Current unix time in whole seconds (the kenspeckle timestamp convention). */
 function nowSec(): number {
   return Math.floor(Date.now() / 1000)
 }
@@ -433,7 +433,7 @@ export function revokeKen(entry: KenEntry): KenEntry {
 }
 
 /**
- * Mark intent to drop a ken. This is a NO-OP: kindred does not own the consumer's storage, so the
+ * Mark intent to drop a ken. This is a NO-OP: kenspeckle does not own the consumer's storage, so the
  * actual removal of the local record is the CONSUMER'S responsibility (delete it from your store).
  * Returns `void`; kept in the API as an explicit, documented seam so "drop a ken" has a named home
  * and a place to grow (e.g. emitting an audit hook) without changing the call site later.

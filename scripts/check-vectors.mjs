@@ -1,4 +1,4 @@
-// Frozen golden-vector checker for @forgesworn/kindred.
+// Frozen golden-vector checker for @forgesworn/kenspeckle.
 //
 // This is the cross-implementation / future-Rust-port + signet-protocol-migration CONTRACT for the
 // bond ECDH construction (`./bond` `deriveBondSecret`). For each `vectors/bond.ecdh.*.json` it:

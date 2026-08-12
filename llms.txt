@@ -1,15 +1,15 @@
-# @forgesworn/kindred
+# @forgesworn/kenspeckle
 
 > An app wants to hold a user's relationships — family, people they've met and
 > verified, public keys they recognise — WITHOUT becoming a social network (no
-> feed, no follower count, no central graph, no shadow profiles). kindred is those
+> feed, no follower count, no central graph, no shadow profiles). kenspeckle is those
 > primitives as plain data + pure functions: it holds relationships across three
 > social distances, runs the kith bond ceremony (byte-exact ECDH + spoken words),
 > pins and live-challenges recognised keys (ken), and tests a user's own contacts
 > against a server's published presence filter LOCALLY (over @forgesworn/tessera-kit). No
 > storage, no UI, no graph traversal — those are explicit non-goals.
 
-kindred is a protocol-neutral TypeScript library for VERIFIED RELATIONSHIPS:
+kenspeckle is a protocol-neutral TypeScript library for VERIFIED RELATIONSHIPS:
 `kin` (family — mutual + guardianship), `kith` (mutually verified via ECDH +
 spoken-token words), `ken` (one-way recognised public keys). ESM-only, Node ≥ 22.
 Deps: `@forgesworn/tessera-kit`, `spoken-token`, `nostr-attestations`, `@noble/*`,
@@ -19,17 +19,17 @@ Signet ecosystem, consumed by signet-app.
 ## Getting Started
 
 ```
-npm i @forgesworn/kindred
+npm i @forgesworn/kenspeckle
 ```
 
 `@forgesworn/tessera-kit` is a sibling NOT YET ON NPM. For local dev, pack + install the tarball
-(`cd ../tessera-kit && npm pack && cd ../kindred && npm i ../tessera-kit/forgesworn-tessera-kit-0.1.0.tgz`).
-To PUBLISH kindred, publish @forgesworn/tessera-kit first — do NOT ship a `file:` dep.
+(`cd ../tessera-kit && npm pack && cd ../kenspeckle && npm i ../tessera-kit/forgesworn-tessera-kit-0.1.0.tgz`).
+To PUBLISH kenspeckle, publish @forgesworn/tessera-kit first — do NOT ship a `file:` dep.
 
 ```typescript
-import { deriveBondSecret, bondWords, verifyBondWord } from '@forgesworn/kindred/bond'
-import { pinKenFromNip05, buildKeyControlChallenge, verifyKeyControl } from '@forgesworn/kindred/ken'
-import { discoverPresent, parseFilterPublication } from '@forgesworn/kindred/discovery'
+import { deriveBondSecret, bondWords, verifyBondWord } from '@forgesworn/kenspeckle/bond'
+import { pinKenFromNip05, buildKeyControlChallenge, verifyKeyControl } from '@forgesworn/kenspeckle/ken'
+import { discoverPresent, parseFilterPublication } from '@forgesworn/kenspeckle/discovery'
 
 // kith: derive the byte-exact shared secret, read directional words for a counter.
 const secret = deriveBondSecret(myPrivHex, theirPubHex)
@@ -52,7 +52,7 @@ const present = discoverPresent(parseFilter(pub.blob), myEntries, myPersonaPubHe
   published) / `ken` (no secret, one-way). `hasSharedSecret` narrows the union.
 - **Persona scoping** — every entry has an `ownerPubkey` (one of my nsec-tree
   persona keys). `discoverPresent` throws on mixed-owner input (anti-correlation).
-  Enforced where kindred can; full at-rest scoping is the consumer's obligation.
+  Enforced where kenspeckle can; full at-rest scoping is the consumer's obligation.
 - **Byte-exact ECDH** — `deriveBondSecret` reproduces signet-protocol's
   `sha256(x-coord(myPriv · lift_x_even('02'||theirX)))` so migrated contacts' words
   don't break. Agreement holds because only x is hashed (±P share an x).
@@ -112,7 +112,7 @@ const present = discoverPresent(parseFilter(pub.blob), myEntries, myPersonaPubHe
 
 ## Security
 
-ONE-LINE CAVEAT: kindred makes narrow, honest claims — persona-scoping is a consumer
+ONE-LINE CAVEAT: kenspeckle makes narrow, honest claims — persona-scoping is a consumer
 obligation it assists but cannot guarantee; NIP-05 is TOFU not key-continuity;
 `attributeSignature` is replayable (use `verifyKeyControl`); annotations are never
 serialised; and a forged presence filter is a doxxing primitive, so verify the Nostr
@@ -121,7 +121,7 @@ Full posture in SECURITY.md.
 
 ## Optional
 
-- [README](https://github.com/forgesworn/kindred/blob/main/README.md): usage guide with kith / ken / discovery quickstarts
-- [PROTOCOL.md](https://github.com/forgesworn/kindred/blob/main/PROTOCOL.md): byte-exact ECDH + frozen migration vector, spoken-token usage, kind/tag allocation, invite canonical bytes, build/parse asymmetry
-- [SECURITY.md](https://github.com/forgesworn/kindred/blob/main/SECURITY.md): honest privacy posture (persona-scoping limits, NIP-05 TOFU, key-control vs attribution, annotations-never-serialised, pin-verify mandatory)
-- [@forgesworn/tessera-kit](https://github.com/forgesworn/tessera-kit): the membership-presence filter @forgesworn/kindred/discovery consumes
+- [README](https://github.com/forgesworn/kenspeckle/blob/main/README.md): usage guide with kith / ken / discovery quickstarts
+- [PROTOCOL.md](https://github.com/forgesworn/kenspeckle/blob/main/PROTOCOL.md): byte-exact ECDH + frozen migration vector, spoken-token usage, kind/tag allocation, invite canonical bytes, build/parse asymmetry
+- [SECURITY.md](https://github.com/forgesworn/kenspeckle/blob/main/SECURITY.md): honest privacy posture (persona-scoping limits, NIP-05 TOFU, key-control vs attribution, annotations-never-serialised, pin-verify mandatory)
+- [@forgesworn/tessera-kit](https://github.com/forgesworn/tessera-kit): the membership-presence filter @forgesworn/kenspeckle/discovery consumes
