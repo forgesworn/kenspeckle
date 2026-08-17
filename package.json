@@ -82,7 +82,7 @@
     "nostr-tools": "^2.23.9"
   },
   "devDependencies": {
-    "@scure/base": "^2.0.0",
+    "@scure/base": "^2.3.0",
     "@types/node": "^22",
     "nostr-tools": "^2.24.1",
     "typescript": "^6.0.2",
