@@ -17,7 +17,7 @@ jobs:
       # GITHUB_TOKEN as an http.https://github.com/.extraheader that overrides
       # the FORGESWORN_READ_PAT insteadOf rewrite below, and npm ci 404s on the
       # private @forgesworn/tessera-kit dependency (GITHUB_TOKEN can't see other repos).
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
