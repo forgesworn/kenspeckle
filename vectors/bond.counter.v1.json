@@ -1,0 +1,35 @@
+{
+  "description": "deriveCeremonyCounter golden vector for @forgesworn/kenspeckle ./bond. For each row, deriveCeremonyCounter(nonceA, nonceB) AND deriveCeremonyCounter(nonceB, nonceA) MUST both equal `counter` (symmetric — nonce order is normalised internally, not the caller's argument order). `mixed-case-input` exercises the lowercase-before-use guard; `nonceA-greater-than-nonceB` exercises the ascending byte-order normalisation of the (lo, hi) pair. Independently computed with python3 hashlib: SHA-256(b'kindred:bond:counter' + b'\\x00' + bytes.fromhex(lo) + bytes.fromhex(hi))[0:4] as big-endian uint32, where lo/hi are the two lowercased 16-byte nonces in ascending order.",
+  "rows": [
+    {
+      "name": "basic",
+      "nonceA": "11111111111111111111111111111111",
+      "nonceB": "22222222222222222222222222222222",
+      "counter": 3298768894
+    },
+    {
+      "name": "extremes-00-and-ff",
+      "nonceA": "00000000000000000000000000000000",
+      "nonceB": "ffffffffffffffffffffffffffffffff",
+      "counter": 1927797522
+    },
+    {
+      "name": "mixed-case-input",
+      "nonceA": "AABBCCDDEEFF00112233445566778899",
+      "nonceB": "1122334455667788990011223344AaBb",
+      "counter": 4166670750
+    },
+    {
+      "name": "nonceA-greater-than-nonceB",
+      "nonceA": "fedcba9876543210fedcba9876543210",
+      "nonceB": "0123456789abcdef0123456789abcdef",
+      "counter": 587733715
+    },
+    {
+      "name": "arbitrary",
+      "nonceA": "deadbeefdeadbeefdeadbeefdeadbeef",
+      "nonceB": "cafebabecafebabecafebabecafebabe",
+      "counter": 3227282190
+    }
+  ]
+}

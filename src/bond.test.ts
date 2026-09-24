@@ -12,7 +12,11 @@ import {
   buildBondAttestation,
   buildBondRevocation,
   retractBondAssertion,
+  deriveCeremonyCounter,
+  timeCounter,
+  normalizeSpokenWord,
   KINDRED_BOND_NAMESPACE,
+  CEREMONY_COUNTER_TAG,
 } from './bond.js'
 import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure'
 import { verifyBondAttestation } from './invite.js'
@@ -153,6 +157,33 @@ describe('verifyBondWord — constant-time compare of the counterparty word', ()
   it('returns ok:false for the right word at the wrong counter', () => {
     const A = bondWords(SECRET, PUB_A, PUB_B, 11)
     expect(verifyBondWord(SECRET, PUB_A, PUB_B, 12, A.theirs)).toEqual({ ok: false })
+  })
+
+  it('normalises the spoken word before comparing: trailing/leading whitespace and case are forgiven', () => {
+    const A = bondWords(SECRET, PUB_A, PUB_B, 11)
+    expect(verifyBondWord(SECRET, PUB_A, PUB_B, 11, `${A.theirs} `)).toEqual({ ok: true })
+    expect(verifyBondWord(SECRET, PUB_A, PUB_B, 11, ` ${A.theirs.toUpperCase()}`)).toEqual({ ok: true })
+    expect(verifyBondWord(SECRET, PUB_A, PUB_B, 11, A.theirs.toUpperCase())).toEqual({ ok: true })
+  })
+
+  it('still returns ok:false for a wrong word after normalisation (normalising is not weakening)', () => {
+    expect(verifyBondWord(SECRET, PUB_A, PUB_B, 11, ' WRONG-WORD ')).toEqual({ ok: false })
+  })
+})
+
+describe('normalizeSpokenWord', () => {
+  it('NFKC-normalises, trims and lowercases', () => {
+    expect(normalizeSpokenWord('Fruit ')).toBe('fruit')
+    expect(normalizeSpokenWord(' FRUIT')).toBe('fruit')
+    expect(normalizeSpokenWord('fruit')).toBe('fruit')
+    // NFKC folds compatibility variants (e.g. fullwidth Latin) to their canonical form.
+    expect(normalizeSpokenWord('ＦＲＵＩＴ')).toBe('fruit')
+  })
+
+  it('returns "" for a non-string input instead of throwing', () => {
+    expect(normalizeSpokenWord(null as unknown as string)).toBe('')
+    expect(normalizeSpokenWord(undefined as unknown as string)).toBe('')
+    expect(normalizeSpokenWord(42 as unknown as string)).toBe('')
   })
 })
 
@@ -438,8 +469,70 @@ describe('deriveBondSecret — no cosmetic zeroization (L3)', () => {
   })
 })
 
+describe('deriveCeremonyCounter — shared ceremony counter from two handshake nonces', () => {
+  const NONCE_A = '11'.repeat(16)
+  const NONCE_B = '22'.repeat(16)
+
+  it('is symmetric: swapping the arguments returns the same counter', () => {
+    const forward = deriveCeremonyCounter(NONCE_A, NONCE_B)
+    const backward = deriveCeremonyCounter(NONCE_B, NONCE_A)
+    expect(forward).toBe(backward)
+    expect(Number.isInteger(forward)).toBe(true)
+    expect(forward).toBeGreaterThanOrEqual(0)
+    expect(forward).toBeLessThanOrEqual(0xffffffff)
+  })
+
+  it('lowercases mixed-case nonces before hashing (same result as the lowercase form)', () => {
+    const mixed = deriveCeremonyCounter(NONCE_A.toUpperCase(), NONCE_B)
+    const lower = deriveCeremonyCounter(NONCE_A, NONCE_B)
+    expect(mixed).toBe(lower)
+  })
+
+  it('throws for a nonce that is not exactly 32 hex chars', () => {
+    expect(() => deriveCeremonyCounter('ab', NONCE_B)).toThrow('deriveCeremonyCounter: nonce must be 32 hex chars')
+    expect(() => deriveCeremonyCounter(NONCE_A, 'zz'.repeat(16))).toThrow(
+      'deriveCeremonyCounter: nonce must be 32 hex chars',
+    )
+    expect(() => deriveCeremonyCounter(NONCE_A + '00', NONCE_B)).toThrow(/32 hex chars/)
+  })
+
+  it('throws when the two (lowercased) nonces are equal', () => {
+    expect(() => deriveCeremonyCounter(NONCE_A, NONCE_A)).toThrow('deriveCeremonyCounter: nonces must differ')
+    expect(() => deriveCeremonyCounter(NONCE_A, NONCE_A.toUpperCase())).toThrow(/must differ/)
+  })
+})
+
+describe('timeCounter — floor(now / period), clamped to uint32', () => {
+  it('returns floor(nowSec / periodSec)', () => {
+    expect(timeCounter(100, 10)).toBe(10)
+    expect(timeCounter(109, 10)).toBe(10)
+    expect(timeCounter(0, 10)).toBe(0)
+  })
+
+  it('throws for a non-positive or non-safe-integer periodSec', () => {
+    expect(() => timeCounter(100, 0)).toThrow('timeCounter: periodSec must be a positive safe integer')
+    expect(() => timeCounter(100, -1)).toThrow(/periodSec/)
+    expect(() => timeCounter(100, 1.5)).toThrow(/periodSec/)
+    expect(() => timeCounter(100, Number.MAX_SAFE_INTEGER + 1)).toThrow(/periodSec/)
+  })
+
+  it('throws for a non-finite or negative nowSec', () => {
+    expect(() => timeCounter(-1, 10)).toThrow('timeCounter: nowSec must be a finite number >= 0')
+    expect(() => timeCounter(NaN, 10)).toThrow(/nowSec/)
+    expect(() => timeCounter(Infinity, 10)).toThrow(/nowSec/)
+  })
+
+  it('throws when the result exceeds the uint32 range', () => {
+    expect(() => timeCounter(0x100000000 * 10, 10)).toThrow('timeCounter: counter exceeds uint32 range')
+  })
+})
+
 describe('module surface', () => {
   it('exports the bond namespace constant', () => {
     expect(KINDRED_BOND_NAMESPACE).toBe('kindred:bond')
+  })
+
+  it('exports the ceremony counter domain tag', () => {
+    expect(CEREMONY_COUNTER_TAG).toBe('kindred:bond:counter')
   })
 })

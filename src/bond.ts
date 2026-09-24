@@ -12,7 +12,7 @@
 
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
+import { bytesToHex, concatBytes, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js'
 import { deriveDirectionalPair } from 'spoken-token'
 import { timingSafeStringEqual } from 'spoken-token/crypto'
 import { ATTESTATION_KIND, createAttestation, createRevocation } from 'nostr-attestations'
@@ -32,6 +32,15 @@ const BOND_ATTESTATION_KIND: number = ATTESTATION_KIND
 
 /** Exactly 64 lowercase hex chars (32 bytes). Inputs are lowercased before this test runs. */
 const HEX64_LOWER = /^[0-9a-f]{64}$/
+
+/** Exactly 32 lowercase hex chars (16 bytes) — the handshake nonce shape `deriveCeremonyCounter`
+ *  takes. Inputs are lowercased before this test runs. */
+const HEX32_LOWER = /^[0-9a-f]{32}$/
+
+/** Domain-separation tag for `deriveCeremonyCounter`. Distinct from `KINDRED_BOND_NAMESPACE` (the
+ *  spoken-token namespace) — this tag scopes the SHA-256 that turns two handshake nonces into a
+ *  ceremony counter, a different construction with a different collision surface. */
+export const CEREMONY_COUNTER_TAG = 'kindred:bond:counter'
 
 /**
  * Derive the kith shared secret via ECDH — **byte-for-byte identical to signet-protocol**.
@@ -209,6 +218,18 @@ function clampTolerance(tolerance: number | undefined): number {
   return t > MAX_BOND_TOLERANCE ? MAX_BOND_TOLERANCE : t
 }
 
+/**
+ * Normalise a spoken word the way a human might say/type it back: Unicode-fold (NFKC), trim
+ * surrounding whitespace, and lowercase. spoken-token's own wordlist is already all-lowercase ASCII,
+ * so this exists purely to forgive the SPEAKER/TRANSCRIBER side — " Fruit", "FRUIT ", "fruit" all
+ * normalise to the same `'fruit'` before `verifyBondWord` constant-time-compares it. A non-string
+ * input normalises to `''` (never throws — this feeds a fail-soft `{ok}` comparison, not a guard).
+ */
+export function normalizeSpokenWord(s: string): string {
+  if (typeof s !== 'string') return ''
+  return s.normalize('NFKC').trim().toLowerCase()
+}
+
 /** Options for `verifyBondWord` — a superset of `BondWordsOpts` adding a clock-skew `tolerance` window.
  *  `namespace` carries the same signet-me-compat meaning as on `bondWords`. */
 export interface VerifyBondWordOpts extends BondWordsOpts {
@@ -229,6 +250,10 @@ export interface VerifyBondWordOpts extends BondWordsOpts {
  * deterministically — NOT a tolerance-window `verifyToken`) and constant-time-compares it to what was
  * `spoken`. A constant-time compare avoids leaking, via early-exit timing, how many leading characters
  * of a guessed word were correct.
+ *
+ * `spoken` is normalised via `normalizeSpokenWord` (NFKC + trim + lowercase) before the compare, so
+ * "Fruit ", " FRUIT" and "fruit" all verify identically — spoken-token's wordlist is already
+ * lowercase, so this only forgives how a human said or typed the word back.
  *
  * **Tolerance window (`opts.tolerance`).** Like signet-me's ±tolerance clock-skew window: with `t > 0`,
  * `spoken` is accepted if it matches the counterparty's word at ANY counter in `[counter-t, counter+t]`.
@@ -282,6 +307,11 @@ export function verifyBondWord(
   } catch {
     return { ok: false }
   }
+  // Normalise the spoken word BEFORE the compare loop (not per-candidate — the value doesn't change
+  // across the tolerance window): Unicode-fold, trim, lowercase, so " Fruit"/"FRUIT "/"fruit" all
+  // verify identically. spoken-token's wordlist is already lowercase, so this only forgives the
+  // human/transcription side.
+  const normalizedSpoken = normalizeSpokenWord(spoken)
   const tolerance = clampTolerance(opts?.tolerance)
   const wordOpts: BondWordsOpts = { namespace: opts?.namespace }
   // Clamp the candidate counter window to the valid uint32 range so a boundary `counter` never feeds
@@ -298,9 +328,74 @@ export function verifyBondWord(
   let matched = false
   for (let c = lo; c <= hi; c++) {
     const theirs = bondWords(secretHex, aPubHex, bPubHex, c, wordOpts).theirs
-    matched = timingSafeStringEqual(theirs, spoken) || matched
+    matched = timingSafeStringEqual(theirs, normalizedSpoken) || matched
   }
   return { ok: matched }
+}
+
+/**
+ * Derive a shared ceremony counter from BOTH parties' handshake nonces, so an in-person bond
+ * ceremony agrees on `counter` without either side needing a synchronised clock or picking one.
+ *
+ * Construction: `digest = SHA-256( utf8(CEREMONY_COUNTER_TAG) ‖ 0x00 ‖ lo ‖ hi )`, where `lo`/`hi`
+ * are the two 16-byte nonces in ascending byte order (equivalently, ascending lowercase-hex-string
+ * order — same length hex strings sort byte-for-byte). `counter` is the digest's first 4 bytes read
+ * as a big-endian uint32. Because the nonce ORDER is normalised (not the caller's argument order),
+ * `deriveCeremonyCounter(nonceA, nonceB) === deriveCeremonyCounter(nonceB, nonceA)` — either party
+ * can compute it from `(their nonce, my nonce)` and land on the same value.
+ *
+ * Using a hash of BOTH ceremony-fresh nonces (rather than, say, wall-clock time) means the counter
+ * cannot be predicted before the handshake happens and cannot be replayed across a different pair of
+ * nonces, so `verifyBondWord`'s tolerance window has no ambiguity about which ceremony it belongs to.
+ *
+ * @param nonceAHex - One party's handshake nonce, 32 hex chars (16 bytes; case-insensitive).
+ * @param nonceBHex - The other party's handshake nonce, 32 hex chars (case-insensitive).
+ * @returns An unsigned uint32 (0..0xFFFFFFFF) counter both parties derive identically.
+ * @throws If either nonce is not 32 hex chars, or the two (lowercased) nonces are equal.
+ */
+export function deriveCeremonyCounter(nonceAHex: string, nonceBHex: string): number {
+  if (typeof nonceAHex !== 'string' || !HEX32_LOWER.test(nonceAHex.toLowerCase())) {
+    throw new Error('deriveCeremonyCounter: nonce must be 32 hex chars')
+  }
+  if (typeof nonceBHex !== 'string' || !HEX32_LOWER.test(nonceBHex.toLowerCase())) {
+    throw new Error('deriveCeremonyCounter: nonce must be 32 hex chars')
+  }
+  const a = nonceAHex.toLowerCase()
+  const b = nonceBHex.toLowerCase()
+  if (a === b) throw new Error('deriveCeremonyCounter: nonces must differ')
+  // Fixed-length lowercase-hex string order is byte order: normalise so both parties hash the same
+  // (lo, hi) regardless of which nonce they call "mine" vs "theirs".
+  const lo = a < b ? a : b
+  const hi = a < b ? b : a
+  const digest = sha256(
+    concatBytes(utf8ToBytes(CEREMONY_COUNTER_TAG), Uint8Array.of(0x00), hexToBytes(lo), hexToBytes(hi)),
+  )
+  return ((digest[0]! << 24) | (digest[1]! << 16) | (digest[2]! << 8) | digest[3]!) >>> 0
+}
+
+/**
+ * Derive a time-rotating counter from a unix timestamp and a rotation period, for a RE-VERIFICATION
+ * that happens later (not the initial in-person ceremony — use `deriveCeremonyCounter` for that; see
+ * PROTOCOL.md §2 for when each applies).
+ *
+ * @param nowSec    - Current unix time in whole seconds (finite, >= 0).
+ * @param periodSec - Rotation period in seconds (positive safe integer).
+ * @returns `Math.floor(nowSec / periodSec)`, an unsigned uint32.
+ * @throws If `periodSec` is not a positive safe integer, `nowSec` is not finite or negative, or the
+ *         result exceeds `0xFFFFFFFF`.
+ */
+export function timeCounter(nowSec: number, periodSec: number): number {
+  if (!Number.isSafeInteger(periodSec) || periodSec <= 0) {
+    throw new Error('timeCounter: periodSec must be a positive safe integer')
+  }
+  if (typeof nowSec !== 'number' || !Number.isFinite(nowSec) || nowSec < 0) {
+    throw new Error('timeCounter: nowSec must be a finite number >= 0')
+  }
+  const counter = Math.floor(nowSec / periodSec)
+  if (counter > 0xffffffff) {
+    throw new Error('timeCounter: counter exceeds uint32 range')
+  }
+  return counter
 }
 
 /**

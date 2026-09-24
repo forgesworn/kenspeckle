@@ -14,10 +14,10 @@
 // every migrated contact gets a DIFFERENT secret -> different spoken words -> verification breaks for
 // both parties. So this vector is frozen; a drift in the construction must fail the build.
 //
-// It also checks the other frozen wire contracts: bond spoken words (`bond.words.*`), the invite v2
-// signing encoding (`invite.*`), the handshake bytes (`handshake.*`) and the companion rail
-// (`companion-rail.*`, `companion-return.*`). A vector file with any other prefix is an error, not
-// silently skipped.
+// It also checks the other frozen wire contracts: bond spoken words (`bond.words.*`), the ceremony
+// counter derivation (`bond.counter.*`), the invite v2 signing encoding (`invite.*`), the handshake
+// bytes (`handshake.*`) and the companion rail (`companion-rail.*`, `companion-return.*`). A vector
+// file with any other prefix is an error, not silently skipped.
 //
 // Exits non-zero on ANY mismatch or malformation (strict -- this gates releases).
 
@@ -30,7 +30,7 @@ import { schnorr } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js'
 
-import { bondWords, deriveBondSecret, verifyBondWord } from '../dist/bond.js'
+import { bondWords, deriveBondSecret, deriveCeremonyCounter, verifyBondWord } from '../dist/bond.js'
 import { buildHandshakePayload, parseHandshakePayload } from '../dist/handshake.js'
 import { parseJoinInvite, serializeJoinInvite } from '../dist/invite.js'
 import {
@@ -65,7 +65,7 @@ if (files.length === 0) {
 const failures = []
 let assertionCount = 0
 
-const KNOWN_PREFIXES = ['bond.ecdh.', 'bond.words.', 'invite.', 'handshake.', 'companion-rail.', 'companion-return.']
+const KNOWN_PREFIXES = ['bond.ecdh.', 'bond.words.', 'bond.counter.', 'invite.', 'handshake.', 'companion-rail.', 'companion-return.']
 for (const fileName of files) {
   if (!KNOWN_PREFIXES.some((prefix) => fileName.startsWith(prefix))) {
     failures.push({ fileName, message: 'Unrecognised vector file prefix (it would not be checked)' })
@@ -373,6 +373,36 @@ for (const fileName of files.filter((name) => name.startsWith('bond.words.'))) {
       }
     } catch (error) {
       failures.push({ fileName, message: `bondWords threw at ${row.namespace}#${row.counter}: ${String(error)}` })
+    }
+  }
+}
+
+// Ceremony counter derivation (`deriveCeremonyCounter`). Independently computed (python3 hashlib —
+// see the vector's own description) so this pins the SHA-256 construction itself, not just a
+// self-consistency check of the TS implementation.
+for (const fileName of files.filter((name) => name.startsWith('bond.counter.'))) {
+  const vector = loadVector(fileName)
+  if (!vector) continue
+  if (!Array.isArray(vector.rows) || vector.rows.length < 5) {
+    failures.push({ fileName, message: 'Missing rows fixture, or fewer than 5 rows' })
+    continue
+  }
+  for (const row of vector.rows) {
+    assertionCount++
+    try {
+      const forward = deriveCeremonyCounter(row.nonceA, row.nonceB)
+      const backward = deriveCeremonyCounter(row.nonceB, row.nonceA)
+      if (forward !== row.counter || backward !== row.counter) {
+        failures.push({
+          fileName,
+          message:
+            `deriveCeremonyCounter drifted at "${row.name}".\n` +
+            `  expected: ${row.counter}\n` +
+            `  actual:   forward=${forward} backward=${backward}`,
+        })
+      }
+    } catch (error) {
+      failures.push({ fileName, message: `"${row.name}": deriveCeremonyCounter threw: ${String(error)}` })
     }
   }
 }
