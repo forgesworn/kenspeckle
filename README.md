@@ -48,22 +48,22 @@ npm i @forgesworn/kenspeckle
 ESM-only, Node ≥ 22. `nostr-tools` is a **peer** dependency (so you and kenspeckle
 share one event type) — install it alongside.
 
-### The `@forgesworn/tessera-kit` sibling constraint (read this before publishing)
+### The `@forgesworn/tessera-kit` sibling dependency
 
 kenspeckle depends on [`@forgesworn/tessera-kit`](https://github.com/forgesworn/tessera-kit), a
-sibling that **is not yet on npm**. For **local development**, build and pack it,
-then install the tarball:
-
-```bash
-cd ../tessera-kit && npm pack          # produces forgesworn-tessera-kit-0.1.0.tgz
-cd ../kenspeckle && npm install ../tessera-kit/forgesworn-tessera-kit-0.1.0.tgz
-```
-
-The lockfile then carries a `file:` path to the sibling. **To publish kenspeckle,
-`@forgesworn/tessera-kit` must be published to npm first — do NOT ship a `file:` dep.** A
-`file:` link in a published package masks unpublished sibling changes and breaks
-external installs (a hard-won signet-app lesson). Publish the sibling, repoint the
-dependency to the npm version, then publish kenspeckle.
+sibling that is **not yet on npm**. `package.json` currently resolves it as a
+**pinned git dependency** (a `git+https://github.com/forgesworn/tessera-kit.git#<commit>`
+spec — a specific commit, not a moving branch/tag), which `npm ci`/`npm install`
+clone directly; nothing to pack or symlink locally. Cloning that private repo needs
+read access — CI authenticates via a short-lived, install-scoped PAT (see
+`.github/workflows/ci.yml`); an external installer needs their own read access to
+`forgesworn/tessera-kit` (or the maintainers to publish it to npm) for `npm i
+@forgesworn/kenspeckle` to succeed. A `scripts/check-publishable-deps.mjs` guard
+runs in `prepublishOnly` and **refuses to publish** while any `dependencies` /
+`peerDependencies` entry is a git/file/http(s) spec — so kenspeckle cannot ship to
+npm with this dependency unresolved to a registry version. Once
+`@forgesworn/tessera-kit` is published, repoint this dependency to a plain npm
+semver range before the next `kenspeckle` publish.
 
 ## Quick start
 
@@ -126,17 +126,24 @@ client parses it, **verifies it against a pinned server key**, then tests its ow
 contacts — scoped to one persona.
 
 ```typescript
-import { parseFilter, verifyFilterBlob } from '@forgesworn/tessera-kit'
-import { discoverPresent, parseFilterPublication } from '@forgesworn/kenspeckle/discovery'
+// `parseFilter` is re-exported from `./discovery` (it delegates to `@forgesworn/tessera-kit`
+// internally) so a consumer importing only kenspeckle's discovery subpath never has to reach past
+// it into tessera-kit directly.
+import { discoverPresent, parseFilter, parseFilterPublication } from '@forgesworn/kenspeckle/discovery'
 
-// Pull the kind-30444 publication; verify the Nostr sig + decode (returns null on any failure).
+// Pull the kind-30444 publication; verifies BOTH the Nostr event sig and the in-blob Schnorr sig,
+// and — since 0.2.0 — that the event's signer IS the in-blob signer (`requireAuthorIsSigner`,
+// default true), binding the namespace/serverId in the d-tag to what the server actually signed.
+// Returns null on any failure.
 const pub = parseFilterPublication(rawWireEvent) // pass the RAW event — not a spread-mutated one
 if (!pub) throw new Error('untrusted publication')
 
 // Provenance gate: the IN-BLOB signer must be a key you pinned out-of-band.
 if (pub.signerPubkeyHex !== PINNED_SERVER_PUBKEY) throw new Error('unpinned server')
 
-// Test MY contacts, scoped to one persona (throws on mixed-owner input — anti-correlation).
+// Test MY contacts, scoped to one persona (throws on mixed-owner input — anti-correlation; also
+// throws if a salt is passed to an OPEN filter, or omitted for a KEYED one — either mismatch
+// silently matches nothing otherwise).
 const filter = parseFilter(pub.blob)
 const present = discoverPresent(filter, myEntries, myGamingPersonaPubHex /*, salt if keyed */)
 // `present` is a CANDIDATE list — confirm-on-connect with a ken key-control challenge before acting.
@@ -152,14 +159,17 @@ subpaths** (so a consumer that only needs `./bond` doesn't pull the discovery /
 
 | Export | Purpose |
 |--------|---------|
-| types `KindredTier`, `KindredEntry` (`KinEntry`/`KithEntry`/`KenEntry`), `MutualEntry`, `KenProvenance`, `KenRotation`, `PrivateAnnotations`, `WireEntry` | the relationship model — `KenEntry.corroborations?` records *additional independent* channels agreeing (`provenance` stays the required, singular primary) |
+| types `KindredTier`, `KindredEntry` (`KinEntry`/`KithEntry`/`KenEntry`), `MutualEntry`, `KenProvenance`, `KenRotation`, `PrivateAnnotations`, `WireEntry`, `SyncEntry`, `DistributiveOmit` | the relationship model — `KenEntry.corroborations?` records *additional independent* channels agreeing (`provenance` stays the required, singular primary). `WireEntry`/`SyncEntry` are built with `DistributiveOmit` so narrowing on `tier` still sees tier-specific fields (`sharedSecret`, `provenance`, `relationship`, …) |
 | `EventTemplate`, `NostrEvent`, `NostrFilter` | re-exported `nostr-tools` aliases — **one** canonical event type |
 | `hasSharedSecret(entry)` | type predicate — narrows to the kin/kith arms that carry a `sharedSecret` |
 | `scopeToPersona(entry, personaPubkeyHex)` / `assertOwnedPersona(personaPubkeyHex, myLeaves)` | persona scoping (the latter throws unless owned) |
 | `searchEntries(entries, query)` | local search over name / pubkey / **annotations** (searchable locally, never serialised) |
 | `linkForRecall(entries, ids)` / `unlink(entries, pubkey)` | private "these pubkeys are one human" grouping (mutates in place) |
-| `toWire(e)` / `serializeEntry(e)` / `parseEntry(s)` | wire view + **byte-stable** canonical JSON (annotations **excluded**) + hardened parse |
-| `exportEntriesEncrypted(entries, key)` / `importEntries(blob, key)` | XChaCha20-Poly1305 self-backup — **includes** annotations (the user's own sealed copy, not a graph disclosure) |
+| `toWire(e)` / `serializeEntry(e)` | **true wire-safe** view + **byte-stable** canonical JSON — strips **both** `annotations` **and** `sharedSecret` (0.2.0: previously only `annotations`). Safe to hand to any third party. A kin/kith `WireEntry` therefore does **not** round-trip through `parseEntry` — the secret's absence is intentional, not a bug |
+| `toSyncForm(e)` / `serializeEntryForSync(e)` | KEEPS `sharedSecret` (strips only `annotations`) — for the ONE legitimate case that needs the secret to travel: syncing a roster across the user's OWN devices over an already-private/authenticated transport. **Never** publish this output |
+| `parseEntry(s)` | hardened parse; reconstructs `serializeEntryForSync`'s output (requires `sharedSecret` for kin/kith either way) |
+| `exportEntriesEncrypted(entries, key)` / `importEntries(blob, key)` | XChaCha20-Poly1305 self-backup — **includes** annotations (the user's own sealed copy, not a graph disclosure). Backups now carry a `KSBK` version header; older (pre-header) backups are still readable by `importEntries` |
+| `toGrantView(entry)` / `buildGrantEnvelope(scope, views, publishedAt, opts?)` / `parseGrantEnvelope(s)` | companion data-rail envelope: a secret-stripped "read & pick" contact view (`GrantContactView` — structurally omits `sharedSecret`/`annotations`/`bondAssertion`/`provenance`) a companion app can be granted, scoped by tier/persona (`GrantScope`) |
 
 ### `./companion-rail`
 
@@ -193,7 +203,14 @@ all fields validated, `displayName` returned **verbatim**). Type `HandshakePaylo
 `deriveBondSecret(myPrivHex, theirPubHex)` (byte-exact ECDH); `bondWords(secret,
 aPub, bPub, counter, opts?)` → `{ mine, theirs }`; `verifyBondWord(…, spoken, opts?)`
 → `{ ok }`; `buildBondAttestation({ subjectPubHex, summary? })` → kind-31000
-`EventTemplate` (`type:'kindred-bond'`); `retractBondAssertion(assertion)` → kind-5.
+`EventTemplate` (`type:'kindred-bond'`).
+
+Retracting a bond: `buildBondRevocation(assertion, { attesterPubHex, subjectPubHex })`
+is now the **primary** way to retract — it emits a kind-5 deletion carrying `e`
+(the attestation event id), `a` (its addressable coordinate), and `k` (kind `31000`)
+tags, so relays and clients that follow NIP-09 can resolve the deletion without
+extra lookups. `retractBondAssertion(assertion, { attesterPubHex, subjectPubHex })`
+still exists but now takes the same second argument to emit the same tags.
 Const `KINDRED_BOND_NAMESPACE`. The optional `opts`
 (`{ namespace? }`, plus `tolerance?` on `verifyBondWord`)
 exist for **signet-me migration compatibility** — `{ namespace: 'signet:me',
@@ -205,10 +222,21 @@ migrated contact can cross-verify with an un-migrated peer; defaults
 ### `./ken`
 
 `pinKen(p)` / `pinKenFromNip05(nip05, ownerPubkeyHex, fetch)` (refuse-on-mismatch
-TOFU); `buildKeyControlChallenge()`; `verifyKeyControl(entry, nonce, signedEvent)`
-(**live**, fail-closed); `attributeSignature(entry, event)` (**replayable** — credit,
-don't authenticate); `resolveKen` (propose-not-flip) / `acceptKenRotation` /
-`revokeKen` / `dropKen` (consumer deletes).
+TOFU); `buildKeyControlChallenge()`; `verifyKeyControl(entry, nonce, signedEvent,
+opts?)` (**live**, fail-closed; `opts.expectedCreatedAt`/`maxAgeSec`/`verifierTag`
+are an OPT-IN, backward-compatible partial mitigation for a verifier-relay attack —
+see the doc comment); `attributeSignature(entry, event)` (**replayable** — credit,
+don't authenticate); `resolveKen` (propose-not-flip; a NIP-05 resolving to a key
+already in `previousPubkeys` is flagged `rotation.rollback: true` rather than
+proposed as an ordinary rotation) / `acceptKenRotation(entry, opts?)` (throws if
+already accepted, if `newPubkey` equals the current pin, or — unless `opts:
+{ allowRevert: true }` — if the rotation is a flagged rollback) / `revokeKen` /
+`dropKen` (consumer deletes).
+
+Both `pinKen` and `addCorroboration(entry, provenance)` run the SAME provenance
+validation, the same `MAX_CORROBORATIONS` (64) cap, and reject the reserved
+`companion:` locator prefix — a builder can no longer mint an entry the parser
+would then refuse.
 
 `addCorroboration(entry, provenance)` records **another independent channel**
 agreeing this key is this person — pure, appends in observation order, never
@@ -216,6 +244,13 @@ touches the primary `provenance`, and deliberately does **not** de-duplicate (a
 re-check a year later is new recency evidence). `summarizeKenProvenance(entry)`
 reports `{ confirmations, claimed, distinctSources, distinctLocators, sources,
 mostRecentAt, oldestAt }`.
+
+**NIP-05 handling.** Every entry point that can reach a `nip05` field (`pinKen`,
+`pinKenFromNip05`, and the parser) validates a STRICT `local@domain` shape — no
+port, no userinfo, no path/query/fragment, no bare IP literal — and the fetch is
+hardened: `redirect:'error'` (NIP-05 requires ignoring redirects), a bounded
+timeout, a size-capped body read before `JSON.parse`, and both halves lowercased
+before querying/looking up (NIP-05 names are case-insensitive).
 
 `claimed` is the one to render alongside any total. A ken landed from a companion
 app can show **six confirmations across six distinct sources with nothing verified
@@ -236,9 +271,15 @@ compromise). Signals, not guarantees.
 
 ### `./discovery`
 
-`discoverPresent(filter, entries, ownerPubkey, saltHex?)` (throws on mixed persona);
-`disclosureFor({ salt? })` → `DiscoveryDisclosure`; `buildFilterPublication(p)` /
-`parseFilterPublication(event, opts?)` (verifies **both** signatures — returns
+`discoverPresent(filter, entries, ownerPubkey, saltHex?)` (throws on mixed persona;
+**also** throws if `saltHex` is given for an OPEN filter or omitted for a KEYED
+one — either mismatch would otherwise silently match nothing, a false "no friends
+here"); `disclosureFor({ salt? })` → `DiscoveryDisclosure`; `buildFilterPublication(p)`
+/ `parseFilterPublication(event, opts?)` (verifies the Nostr event sig, the in-blob
+Schnorr sig, **and** — `opts.requireAuthorIsSigner`, default `true`, since 0.2.0 —
+that the event's signer IS the in-blob signer, so the namespace/serverId the event
+asserts are transitively bound to what the server signed; pass `{
+requireAuthorIsSigner: false }` to opt out for a different trust model. Returns
 `null`, never throws); `aggregatorQuery(namespace)`; `buildOptOutRequest(p,
 memberPrivHex)`. Re-exports `parseFilter` from `@forgesworn/tessera-kit`. Consts
 `KINDRED_FILTER_KIND = 30444`, `KINDRED_OPTOUT_KIND = 30445`.
@@ -246,9 +287,18 @@ memberPrivHex)`. Re-exports `parseFilter` from `@forgesworn/tessera-kit`. Consts
 ### `./invite`
 
 `buildJoinInvite(p, inviterPrivHex)` → `JoinInvite` **object**;
-`parseJoinInvite(blob, now?)` (verifies sig + expiry); `verifyBondAttestation(event)`
-→ `{ ok, attesterPubHex?, subjectPubHex? }` (single-attestation only — **no**
-counting/graph). Type `JoinInvite`.
+`parseJoinInvite(blob, now?)` (verifies sig + expiry); `verifyBondAttestation(event,
+now?)` → `{ ok, reason?, attesterPubHex?, subjectPubHex? }` (single-attestation
+only — **no** counting/graph; fails with a `reason` for a revoked, expired,
+not-yet-active, or self-attestation). Type `JoinInvite`.
+
+**Invites are v2 only.** Every `JoinInvite` carries `v: 2`. The signed digest is
+`sha256(JSON.stringify(['kenspeckle-invite', 2, namespace, serverId,
+inviterPubkey, nonce, expiresAt ?? null]))`. `nonce` must be at least 16 bytes of
+hex; `expiresAt`, when present, must be a non-negative safe integer; and a lone
+UTF-16 surrogate anywhere in the invite's string fields is rejected (it would
+serialise to different bytes depending on the JSON encoder / platform, breaking
+the byte-exact digest).
 
 Exact byte layouts (the ECDH construction + frozen vector, invite canonical bytes,
 kind/tag shapes, build/parse asymmetry) are in **[PROTOCOL.md](./PROTOCOL.md)**.
@@ -262,16 +312,33 @@ short version:
   enforces single-owner input) but **cannot guarantee** (no storage).
 - **Private annotations are never serialised** (type-level + runtime); they ARE in
   the user's own encrypted backup (allowed — not a graph disclosure).
-- **kith shared secrets are never published** (only co-signed assertions).
+- **kith/kin shared secrets are never published** — `toWire`/`serializeEntry` strip
+  `sharedSecret` structurally (0.2.0; previously only `annotations` was excluded).
+  Cross-device sync of your OWN devices, which genuinely needs the secret to
+  travel, uses the separately-named `toSyncForm`/`serializeEntryForSync` instead —
+  never publish that output.
 - **NIP-05 is TOFU, not key-continuity** — a key-change is propose-only, never
-  auto-accept; require user confirmation.
+  auto-accept; require user confirmation. A rollback to a key already in
+  `previousPubkeys` (a compromised/reverted domain re-serving an old key) is
+  flagged distinctly and `acceptKenRotation` refuses it without an explicit
+  `{ allowRevert: true }`. `acceptKenRotation` also refuses an already-accepted
+  rotation, so it can never double-append the current key into its own history.
 - **`attributeSignature` is replayable** — use `verifyKeyControl` (fresh nonce) for
   impersonation resistance.
 - **Verify filter publications against a pinned key** — check the Nostr sig AND the
   in-blob Schnorr sig; pass the **raw** wire event (a spread-mutated one carries a
-  stale `Symbol(verified)` false-green).
+  stale `Symbol(verified)` false-green). Since 0.2.0, `parseFilterPublication` also
+  requires the event's signer to equal the in-blob signer by default
+  (`requireAuthorIsSigner`), binding the namespace/serverId the event asserts to
+  what the server actually signed.
 - **Discovery is opt-in + exit-able, but you cannot cryptographically verify
   removal** from a pool you left. Real member privacy = per-context personas.
+- **`tier:'kith'` is a shape, not proof a bond happened.** `parseEntry`/
+  `importEntries` accept any syntactically-valid 64-hex `sharedSecret` — kenspeckle
+  cannot itself confirm a real `deriveBondSecret` ceremony occurred.
+  **Authenticate/encrypt whatever channel feeds `parseEntry`/`importEntries`**; an
+  unauthenticated sync source could otherwise escalate a one-way `ken` into a
+  mutually-trusted-looking `kith`.
 
 ## Toolkit
 

@@ -9,11 +9,22 @@ npm install
 ```
 
 > **Local dependency note.** `@forgesworn/kenspeckle` depends on
-> `@forgesworn/tessera-kit`. Until that package is published to npm, the lockfile
-> resolves it from a local tarball
-> (`cd ../tessera-kit && npm pack && cd ../kenspeckle && npm install ../tessera-kit/forgesworn-tessera-kit-0.1.0.tgz`).
-> Once `@forgesworn/tessera-kit` is on npm, repoint the lockfile off `file:` with a
-> plain `npm install`.
+> `@forgesworn/tessera-kit`, a sibling not yet on npm. `package.json` resolves it
+> as a **pinned git dependency** (`git+https://github.com/forgesworn/tessera-kit.git#<commit>`
+> — a specific commit, not a moving branch/tag), so a plain `npm install`/`npm ci`
+> clones it directly; there is nothing to pack or symlink locally. Cloning the
+> (private) repo needs read access — CI authenticates via a short-lived,
+> install-step-scoped PAT (`FORGESWORN_READ_PAT`, see `.github/workflows/ci.yml`);
+> for local development, make sure your own `git` can reach
+> `github.com/forgesworn/tessera-kit` (SSH key or a PAT in your global git config)
+> before running `npm install`.
+>
+> `scripts/check-publishable-deps.mjs` runs in `prepublishOnly` and **refuses to
+> publish** while any `dependencies`/`peerDependencies` entry is a git/file/http(s)
+> spec — so this cannot accidentally ship to npm while the dependency is
+> unresolved. Once `@forgesworn/tessera-kit` is published, repoint this dependency
+> to a plain npm semver range (`npm install @forgesworn/tessera-kit@^X.Y.Z`)
+> before the next `kenspeckle` release.
 
 ## Commands
 
@@ -24,6 +35,7 @@ npm install
 | `npm run build` | Compile TypeScript to dist/ |
 | `npm run typecheck` | Type-check without emitting |
 | `npm run vectors:check` | Verify the frozen bond ECDH golden vector(s) against the built code |
+| `npm run check:publishable-deps` | Fail if any `dependencies`/`peerDependencies` entry is a git/file/http(s) spec (runs in `prepublishOnly`) |
 
 ## Project Structure
 
