@@ -200,13 +200,34 @@ describe('discoverPresent — local intersection over a tessera-kit filter', () 
     const filter = parseFilter(blob)
     expect(discoverPresent(filter, [], owner)).toEqual([])
   })
+
+  it('THROWS when an OPEN filter is given a salt anyway (M3 audit finding — mirror of the keyed-without-salt guard)', () => {
+    const owner = freshKeypair().pk
+    const server = freshKeypair()
+    const a = freshKeypair().pk
+    // Open (unsalted) pool containing `a`.
+    const blob = buildSignedBlob([a], server.priv, 100)
+    const filter = parseFilter(blob)
+    expect(filter.keyed).toBe(false)
+
+    const entries: KindredEntry[] = [kithEntry(a, owner)]
+    // Passing a salt to an OPEN filter would hash every candidate as if the pool were keyed, so
+    // NOTHING matches and this would silently return [] — a false "no friends here". It must THROW.
+    expect(() => discoverPresent(filter, entries, owner, SALT)).toThrow(/open \(unkeyed\) but a salt/i)
+    // Without the (wrongly-supplied) salt, the real match is found.
+    expect(discoverPresent(filter, entries, owner).map((e) => e.pubkey)).toEqual([a])
+  })
 })
 
 // --- disclosureFor: honest privacy surface --------------------------------------------------------
 
-describe('disclosureFor — honest disclosure surface', () => {
+describe('disclosureFor — honest disclosure surface (takes the PARSED FILTER, L6 audit finding)', () => {
   it('reports an OPEN pool: not keyed, cross-server discoverable', () => {
-    const d = disclosureFor({})
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 1)
+    const filter = parseFilter(blob)
+    expect(filter.keyed).toBe(false)
+    const d = disclosureFor(filter)
     expect(d).toEqual({
       keyed: false,
       crossServerDiscoverable: true,
@@ -216,7 +237,11 @@ describe('disclosureFor — honest disclosure surface', () => {
   })
 
   it('reports a KEYED pool: keyed, NOT cross-server discoverable', () => {
-    const d = disclosureFor({ salt: SALT })
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 1, SALT)
+    const filter = parseFilter(blob)
+    expect(filter.keyed).toBe(true)
+    const d = disclosureFor(filter)
     expect(d).toEqual({
       keyed: true,
       crossServerDiscoverable: false,
@@ -225,8 +250,16 @@ describe('disclosureFor — honest disclosure surface', () => {
     })
   })
 
-  it('treats an empty-string salt as keyed (salt presence, not content)', () => {
-    expect(disclosureFor({ salt: '' }).keyed).toBe(true)
+  it('derives `keyed` from the filter itself, not a separately-supplied salt — the two can never disagree', () => {
+    // Before the L6 fix, `disclosureFor({ salt })` derived `keyed` from salt PRESENCE — a second,
+    // independent source of truth that could disagree with the filter's own `keyed` flag. Deriving
+    // it from `f.keyed` directly makes that disagreement structurally impossible: there is no salt
+    // parameter left to pass at all.
+    const server = freshKeypair()
+    const openBlob = buildSignedBlob([freshKeypair().pk], server.priv, 1)
+    expect(disclosureFor(parseFilter(openBlob)).keyed).toBe(false)
+    const keyedBlob = buildSignedBlob([freshKeypair().pk], server.priv, 1, SALT)
+    expect(disclosureFor(parseFilter(keyedBlob)).keyed).toBe(true)
   })
 })
 
@@ -249,9 +282,12 @@ describe('filter publication — build → sign → parse round-trip', () => {
     expect(template.kind).toBe(KINDRED_FILTER_KIND)
     expect(template.created_at).toBeTypeOf('number')
 
-    // The publisher's Nostr key signs the event (separate from the in-blob server key).
-    const publisherSk = generateSecretKey()
-    const signed = fromWire(finalizeEvent(template, publisherSk))
+    // The server signs the outer event with the SAME key it used for the in-blob provenance
+    // signature — the genuine-publication shape `requireAuthorIsSigner` (default true, M2 audit
+    // finding) requires: the event signer and the in-blob signer are the same identity, so the
+    // NIP-01 event signature (which covers every tag, including d/n) transitively binds the
+    // namespace/serverId to what the server actually signed.
+    const signed = fromWire(finalizeEvent(template, server.sk))
 
     const parsed = parseFilterPublication(signed)
     expect(parsed).not.toBeNull()
@@ -313,7 +349,8 @@ describe('filter publication — build → sign → parse round-trip', () => {
       keyed: true,
       epoch: 9,
     })
-    const signed = fromWire(finalizeEvent(template, generateSecretKey()))
+    // Signed by the server's OWN key — see the requireAuthorIsSigner note above.
+    const signed = fromWire(finalizeEvent(template, server.sk))
     const parsed = parseFilterPublication(signed)
     expect(parsed).not.toBeNull()
     expect(parsed!.namespace).toBe(NAMESPACE)
@@ -339,7 +376,8 @@ describe('parseFilterPublication — rejects on any failure (returns null)', () 
       keyed: false,
       epoch,
     })
-    const signed = fromWire(finalizeEvent(template, generateSecretKey()))
+    // Signed by the server's own key (genuine-publication shape; see requireAuthorIsSigner above).
+    const signed = fromWire(finalizeEvent(template, server.sk))
     return { signed, server, blob }
   }
 
@@ -466,9 +504,12 @@ describe('parseFilterPublication — epoch/keyed read from the SIGNED blob, not 
     })
     const forged = fromWire(finalizeEvent(template, generateSecretKey()))
 
+    // requireAuthorIsSigner:false isolates the mechanism this test targets (the epoch-rollback
+    // guard) from the SEPARATE M2 author-binding guard, which would otherwise also reject this
+    // attacker-signed event and mask which defense actually fired.
     // The rollback guard must use the blob's SIGNED epoch (5), not the forged tag (9999). With
     // minEpoch:10, the real epoch 5 <= 10 → REJECTED. Trusting the tag (9999 > 10) would WRONGLY accept.
-    expect(parseFilterPublication(forged, { minEpoch: 10 })).toBeNull()
+    expect(parseFilterPublication(forged, { minEpoch: 10, requireAuthorIsSigner: false })).toBeNull()
   })
 
   it('defense-in-depth: a forged epoch TAG that DISAGREES with the blob → null even with no minEpoch', () => {
@@ -483,7 +524,8 @@ describe('parseFilterPublication — epoch/keyed read from the SIGNED blob, not 
     })
     const forged = fromWire(finalizeEvent(template, generateSecretKey()))
     // Even WITHOUT a minEpoch, a tag/blob epoch disagreement is a tampering signal → reject.
-    expect(parseFilterPublication(forged)).toBeNull()
+    // requireAuthorIsSigner:false isolates this from the separate M2 author-binding guard.
+    expect(parseFilterPublication(forged, { requireAuthorIsSigner: false })).toBeNull()
   })
 
   it('defense-in-depth: a forged KEYED tag that DISAGREES with the blob → null', () => {
@@ -500,7 +542,7 @@ describe('parseFilterPublication — epoch/keyed read from the SIGNED blob, not 
       epoch: 7,
     })
     const forged = fromWire(finalizeEvent(template, generateSecretKey()))
-    expect(parseFilterPublication(forged)).toBeNull()
+    expect(parseFilterPublication(forged, { requireAuthorIsSigner: false })).toBeNull()
   })
 
   it('uses the SIGNED blob epoch/keyed for the returned FilterPublication (well-formed, agreeing tags)', () => {
@@ -517,7 +559,8 @@ describe('parseFilterPublication — epoch/keyed read from the SIGNED blob, not 
       keyed: true,
       epoch: 42,
     })
-    const signed = fromWire(finalizeEvent(template, generateSecretKey()))
+    // Signed by the server's own key — the genuine-publication shape (see requireAuthorIsSigner note).
+    const signed = fromWire(finalizeEvent(template, server.sk))
     const parsed = parseFilterPublication(signed)
     expect(parsed).not.toBeNull()
     // The returned epoch/keyed are the SIGNED values (which here equal the agreeing tags).
@@ -526,6 +569,73 @@ describe('parseFilterPublication — epoch/keyed read from the SIGNED blob, not 
     // And the rollback guard now compares the SIGNED epoch (42): minEpoch 41 accepts, 42 rejects.
     expect(parseFilterPublication(signed, { minEpoch: 41 })).not.toBeNull()
     expect(parseFilterPublication(signed, { minEpoch: 42 })).toBeNull()
+  })
+})
+
+// --- namespace/serverId binding: the in-blob signature covers neither (M2 audit finding) -----------
+//
+// The KFLT blob's in-blob Schnorr signature covers epoch/keyed/type/fingerprint — NOT namespace or
+// serverId (those live only in the d-tag, outside the blob). BEFORE this fix, anyone holding a
+// genuinely server-signed blob could re-wrap it under a DIFFERENT d-tag (a different `serverId`,
+// or even a different `namespace`) signed with their OWN key, and `parseFilterPublication` would
+// still return the real server's `signerPubkeyHex` — falsely showing that server's presence at a
+// pool/server it never published to. `requireAuthorIsSigner` (default true) closes this by
+// requiring the outer event's signer to equal the in-blob provenance signer.
+describe('parseFilterPublication — namespace/serverId binding (M2 audit finding)', () => {
+  it('REJECTS a genuine blob RE-WRAPPED under a DIFFERENT serverId by an attacker-signed event (the OLD cross-serverId republish, now fails by default)', () => {
+    const server = freshKeypair()
+    // Server genuinely signs a blob for `SERVER_ID`.
+    const blob = buildSignedBlob([freshKeypair().pk, freshKeypair().pk], server.priv, 10)
+
+    // An attacker re-wraps the SAME server-signed blob under a DIFFERENT serverId ("serverB"),
+    // signing the OUTER event with their OWN key (not the server's). Before the M2 fix, this parsed
+    // successfully and returned `signerPubkeyHex: server.pk` — a false "server present at serverB".
+    const template = buildFilterPublication({
+      namespace: NAMESPACE,
+      serverId: 'serverB',
+      blob,
+      keyed: false,
+      epoch: 10,
+    })
+    const republished = fromWire(finalizeEvent(template, generateSecretKey()))
+
+    // Default (requireAuthorIsSigner: true) now REJECTS the cross-serverId republish.
+    expect(parseFilterPublication(republished)).toBeNull()
+  })
+
+  it('accepts the SAME re-wrapped publication when the caller opts out via requireAuthorIsSigner:false', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 10)
+    const template = buildFilterPublication({
+      namespace: NAMESPACE,
+      serverId: 'serverB',
+      blob,
+      keyed: false,
+      epoch: 10,
+    })
+    const republished = fromWire(finalizeEvent(template, generateSecretKey()))
+    const parsed = parseFilterPublication(republished, { requireAuthorIsSigner: false })
+    expect(parsed).not.toBeNull()
+    expect(parsed!.serverId).toBe('serverB')
+    expect(parsed!.signerPubkeyHex).toBe(server.pk)
+  })
+
+  it('REJECTS when the n tag disagrees with the namespace recovered from the d-tag', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 1)
+    const bad = {
+      kind: KINDRED_FILTER_KIND,
+      tags: [
+        ['d', `kindred:members:${NAMESPACE}:${SERVER_ID}`],
+        ['n', 'com.different.namespace'], // disagrees with the d-tag's namespace segment
+        ['epoch', '1'],
+        ['keyed', '0'],
+      ],
+      content: base64.encode(blob),
+      created_at: Math.floor(Date.now() / 1000),
+    }
+    const signed = fromWire(finalizeEvent(bad, server.sk))
+    expect(parseFilterPublication(signed)).toBeNull()
   })
 })
 
@@ -559,6 +669,16 @@ describe('buildOptOutRequest', () => {
     expect(() =>
       buildOptOutRequest({ namespace: NAMESPACE, serverId: SERVER_ID }, 'ab'.repeat(31)),
     ).toThrow()
+  })
+
+  it('REJECTS a namespace containing a colon (d-tag misparse guard, L5 audit finding — mirrors buildFilterPublication)', () => {
+    const member = freshKeypair()
+    expect(() =>
+      buildOptOutRequest({ namespace: 'com:evil', serverId: SERVER_ID }, member.priv),
+    ).toThrow(/namespace must not contain a colon/i)
+    expect(() =>
+      buildOptOutRequest({ namespace: NAMESPACE, serverId: SERVER_ID }, member.priv),
+    ).not.toThrow()
   })
 
   it('produces a template that finalizes into a valid signed event under the member key', () => {
