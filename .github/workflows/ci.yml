@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [22]
+        node-version: [22, 24]
     steps:
       # persist-credentials: false — otherwise checkout injects the workflow
       # GITHUB_TOKEN as an http.https://github.com/.extraheader that overrides
@@ -63,3 +63,5 @@ jobs:
       - run: npm run build
       - run: npm run vectors:check
       - run: npm test
+      - run: npm run lint:package
+      - run: npm pack --dry-run
