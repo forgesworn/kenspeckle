@@ -34,7 +34,9 @@ npm install
 | `npm run test:watch` | Watch mode |
 | `npm run build` | Compile TypeScript to dist/ |
 | `npm run typecheck` | Type-check without emitting |
-| `npm run vectors:check` | Verify the frozen bond ECDH golden vector(s) against the built code |
+| `npm run test:coverage` | Run all tests with v8 coverage |
+| `npm run vectors:check` | Verify every frozen golden vector in `vectors/` against the built code |
+| `npm run lint:package` | Check the packed package with publint and attw (skips lifecycle scripts, so it runs while a dependency is still a git spec) |
 | `npm run check:publishable-deps` | Fail if any `dependencies`/`optionalDependencies`/`peerDependencies` entry is a git/file/link/http(s) spec (runs in `prepack`) |
 
 ## Project Structure
@@ -114,7 +116,7 @@ npm run test:watch
 3. Write tests for your changes
 4. Ensure all tests pass: `npm test`
 5. Ensure types check: `npm run typecheck`
-6. Ensure the golden vector still holds: `npm run vectors:check`
+6. Ensure the golden vectors still hold: `npm run vectors:check`
 7. Commit with a conventional message (see below)
 8. Open a pull request against `main`
 

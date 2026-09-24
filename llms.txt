@@ -30,14 +30,16 @@ repo (or @forgesworn/tessera-kit published to npm) for `npm i @forgesworn/kenspe
 dependency/optionalDependency/peerDependency is a git/file/http(s) spec, so this cannot ship to npm unresolved.
 
 ```typescript
-import { deriveBondSecret, bondWords, verifyBondWord } from '@forgesworn/kenspeckle/bond'
+import { deriveBondSecret, deriveCeremonyCounter, bondWords, verifyBondWord } from '@forgesworn/kenspeckle/bond'
 import { pinKenFromNip05, buildKeyControlChallenge, verifyKeyControl } from '@forgesworn/kenspeckle/ken'
 import { discoverPresent, parseFilter, parseFilterPublication } from '@forgesworn/kenspeckle/discovery'
 
-// kith: derive the byte-exact shared secret, read directional words for a counter.
+// kith: derive the byte-exact shared secret; derive the counter from BOTH handshake nonces
+// (fresh per ceremony, so an overheard word never replays); read directional words.
 const secret = deriveBondSecret(myPrivHex, theirPubHex)
+const counter = deriveCeremonyCounter(myNonceHex, theirNonceHex) // same value on both sides
 const { mine } = bondWords(secret, myPubHex, theirPubHex, counter)
-const { ok } = verifyBondWord(secret, myPubHex, theirPubHex, counter, whatTheySaid) // → { ok }
+const { ok } = verifyBondWord(secret, myPubHex, theirPubHex, counter, whatTheySaid) // → { ok }, input normalised
 
 // ken: pin (TOFU), then prove LIVE control with a fresh nonce (attribution alone is replayable).
 const entry = await pinKenFromNip05('mrbeast@example.com', myPersonaPubHex, fetch)
@@ -102,7 +104,11 @@ const present = discoverPresent(parseFilter(pub.blob), myEntries, myPersonaPubHe
   (backup blobs carry a `KSBK` version header; older pre-header backups still
   read); `toGrantView`/`buildGrantEnvelope`/`parseGrantEnvelope`.
 - `./handshake` — `buildHandshakePayload` / `parseHandshakePayload`; `HandshakePayload`.
-- `./bond` — `deriveBondSecret`, `bondWords`, `verifyBondWord`, `buildBondAttestation`,
+- `./bond` — `deriveBondSecret`, `bondWords`, `verifyBondWord` (normalises the spoken
+  input: NFKC, trim, lowercase — also exported as `normalizeSpokenWord`),
+  `deriveCeremonyCounter(nonceAHex, nonceBHex)` (counter for an in-person ceremony,
+  symmetric, use with tolerance 0), `timeCounter(nowSec, periodSec)` (time-bucket
+  counter for later re-verification; throws outside uint32), `buildBondAttestation`,
   `buildBondRevocation({ subjectPubHex, reason? })` (PRIMARY way to retract — a
   kind-31000 `status:revoked` event at the attestation's own address),
   `retractBondAssertion(assertion, { attesterPubHex, subjectPubHex })` (supplement —
@@ -110,8 +116,8 @@ const present = discoverPresent(parseFilter(pub.blob), myEntries, myPersonaPubHe
 - `./ken` — `pinKen`, `pinKenFromNip05`, `buildKeyControlChallenge`,
   `verifyKeyControl` (opt-in `opts` for freshness/verifier-tag binding),
   `attributeSignature`, `resolveKen` (flags a rollback via `rotation.rollback`),
-  `acceptKenRotation` (throws if already accepted / self-rotation / unconfirmed
-  rollback), `revokeKen`, `dropKen`, `addCorroboration`, `summarizeKenProvenance`.
+  `acceptKenRotation` (throws on a revoked entry / already accepted / self-rotation /
+  unconfirmed rollback), `revokeKen`, `dropKen`, `addCorroboration`, `summarizeKenProvenance`.
   `pinKen`/`addCorroboration` validate provenance, cap corroborations at 64, and
   reject the reserved `companion:` locator prefix. NIP-05 handling is hardened:
   strict `local@domain` shape validation, `redirect:'error'`, a bounded timeout, a
@@ -125,7 +131,8 @@ const present = discoverPresent(parseFilter(pub.blob), myEntries, myPersonaPubHe
   filter, or omitted for a KEYED one), `disclosureFor`, `buildFilterPublication`,
   `parseFilterPublication` (opt `requireAuthorIsSigner`, default true: the event
   signer must equal the in-blob signer, binding namespace/serverId to what was
-  signed), `aggregatorQuery`, `buildOptOutRequest`, `parseFilter` (re-export);
+  signed), `parseFilterPublicationResult` (same checks, returns `{ ok: false, reason }`
+  with a `FilterPublicationRejection` code instead of `null`), `aggregatorQuery`, `buildOptOutRequest`, `parseFilter` (re-export);
   `KINDRED_FILTER_KIND`, `KINDRED_OPTOUT_KIND`.
 - `./invite` — `buildJoinInvite`, `parseJoinInvite`, `verifyBondAttestation(event,
   now?)` → `{ ok, reason?, ... }`; `JoinInvite`. Invites are v2 only (`v: 2`);

@@ -95,7 +95,8 @@ can silently swap the published key. Therefore:
 - A later NIP-05 key **change is an untrusted signal**: `resolveKen` **proposes** a
   rotation (`accepted:false`) and **never auto-flips** `pubkey`. Accepting it
   (`acceptKenRotation`) is an explicit, user-confirmed act, and accepting the same
-  rotation twice throws.
+  rotation twice throws. It also throws on a revoked entry: a revoked ken cannot be
+  re-pinned to a new key.
 - A change **back** to a key the entry already rotated away from is flagged
   `rotation.rollback: true` — the signature of a reverted or compromised domain.
   `acceptKenRotation` refuses it unless called with `{ allowRevert: true }`; a UI
@@ -243,6 +244,12 @@ The library has **no rate limit** and no lockout. The protection is the human in
 the loop: two people saying a word to each other, once. A consumer that lets an
 attacker submit many guesses (an automated channel, a retry loop) MUST add its own
 limit, and SHOULD keep `tolerance` at 0–1 outside signet-me migration.
+
+**Replay.** The words depend only on the bond secret, the two pubkeys and the
+counter, so a word overheard once is valid again whenever the same counter is
+reused. A fixed counter is therefore NOT RECOMMENDED. An in-person ceremony SHOULD
+use `deriveCeremonyCounter` over both parties' handshake nonces (fresh per ceremony,
+tolerance 0); a later re-verification MAY use `timeCounter`. See PROTOCOL.md §2.
 
 ### 11. Bond attestations: revocation is only visible on the latest version
 
