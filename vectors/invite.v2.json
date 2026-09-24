@@ -46,6 +46,70 @@
         "nonce": "ffeeddccbbaa99887766554433221100",
         "sig": "7bace728e340db5ae64544c1ffd4e68475e7559c3c4c86f6c95d1b65467aad9c3bb1706451547f6130700702f41150594315795d8ee11f8d70b130de3c9456a5"
       }
+    },
+    {
+      "name": "non-ASCII namespace and serverId are raw UTF-8, never \\u-escaped",
+      "fields": {
+        "namespace": "jeu.café",
+        "serverId": "サーバー:🎲",
+        "nonce": "0123456789abcdef0123456789abcdef",
+        "expiresAt": 1700086400
+      },
+      "canonical": "[\"kenspeckle-invite\",2,\"jeu.café\",\"サーバー:🎲\",\"3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1\",\"0123456789abcdef0123456789abcdef\",1700086400]",
+      "digest": "4e6767015b02f3b8665fc362fa8749b9dbf2507d5236d62b0d4d672199440f83",
+      "sig": "715e073a2b5f7a495a1db1f2f7291763008c8e6e7e9429e1648dd4e616c9612d18b0706270c11206ee4eed1d46e39d67cbbed9f6261294bad67b7082a384116b",
+      "wire": "{\"v\":2,\"namespace\":\"jeu.café\",\"serverId\":\"サーバー:🎲\",\"inviterPubkey\":\"3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1\",\"nonce\":\"0123456789abcdef0123456789abcdef\",\"sig\":\"715e073a2b5f7a495a1db1f2f7291763008c8e6e7e9429e1648dd4e616c9612d18b0706270c11206ee4eed1d46e39d67cbbed9f6261294bad67b7082a384116b\",\"expiresAt\":1700086400}",
+      "parsed": {
+        "v": 2,
+        "namespace": "jeu.café",
+        "serverId": "サーバー:🎲",
+        "inviterPubkey": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+        "nonce": "0123456789abcdef0123456789abcdef",
+        "sig": "715e073a2b5f7a495a1db1f2f7291763008c8e6e7e9429e1648dd4e616c9612d18b0706270c11206ee4eed1d46e39d67cbbed9f6261294bad67b7082a384116b",
+        "expiresAt": 1700086400
+      }
+    },
+    {
+      "name": "quote and backslash in fields are backslash-escaped",
+      "fields": {
+        "namespace": "say \"hi\"",
+        "serverId": "C:\\srv\\eu",
+        "nonce": "aaaaaaaaaaaaaaaabbbbbbbbbbbbbbbb"
+      },
+      "canonical": "[\"kenspeckle-invite\",2,\"say \\\"hi\\\"\",\"C:\\\\srv\\\\eu\",\"3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1\",\"aaaaaaaaaaaaaaaabbbbbbbbbbbbbbbb\",null]",
+      "digest": "4c4367ffd1a82f8bb5397f2d20a09f837972ea90d50e09da88b1008b4c46d5a8",
+      "sig": "9a97b8e98859ceef6e960d8e024694a1c50b41e5d6fcf1f055c4341b6301d8e621a503b1b4ca6e14b8271c1cd5b0553506bdbc65b0c12d87f761594e2f7f2d57",
+      "wire": "{\"v\":2,\"namespace\":\"say \\\"hi\\\"\",\"serverId\":\"C:\\\\srv\\\\eu\",\"inviterPubkey\":\"3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1\",\"nonce\":\"aaaaaaaaaaaaaaaabbbbbbbbbbbbbbbb\",\"sig\":\"9a97b8e98859ceef6e960d8e024694a1c50b41e5d6fcf1f055c4341b6301d8e621a503b1b4ca6e14b8271c1cd5b0553506bdbc65b0c12d87f761594e2f7f2d57\"}",
+      "parsed": {
+        "v": 2,
+        "namespace": "say \"hi\"",
+        "serverId": "C:\\srv\\eu",
+        "inviterPubkey": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+        "nonce": "aaaaaaaaaaaaaaaabbbbbbbbbbbbbbbb",
+        "sig": "9a97b8e98859ceef6e960d8e024694a1c50b41e5d6fcf1f055c4341b6301d8e621a503b1b4ca6e14b8271c1cd5b0553506bdbc65b0c12d87f761594e2f7f2d57"
+      }
+    },
+    {
+      "name": "escape-sensitive: control chars escaped; slash, DEL, <>&, U+2028 raw",
+      "fields": {
+        "namespace": "tab\there\nnew\u0001\u001f",
+        "serverId": "a/b<x>&y z ",
+        "nonce": "cccccccccccccccccccccccccccccccc",
+        "expiresAt": 4102444800
+      },
+      "canonical": "[\"kenspeckle-invite\",2,\"tab\\there\\nnew\\u0001\\u001f\",\"a/b<x>&y z \",\"3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1\",\"cccccccccccccccccccccccccccccccc\",4102444800]",
+      "digest": "8420c196e87dd037cfccfb4bbdc483f1161239c24430727c95e811ebc7b33c1e",
+      "sig": "aa2a3bbcb3830df4440013273716229304100f1228472d797d5c364d2bdb5672e56492fdaa10a2f909bb9d4ef92a8481155ba57aa8d5498cb0bc744c062a266e",
+      "wire": "{\"v\":2,\"namespace\":\"tab\\there\\nnew\\u0001\\u001f\",\"serverId\":\"a/b<x>&y z \",\"inviterPubkey\":\"3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1\",\"nonce\":\"cccccccccccccccccccccccccccccccc\",\"sig\":\"aa2a3bbcb3830df4440013273716229304100f1228472d797d5c364d2bdb5672e56492fdaa10a2f909bb9d4ef92a8481155ba57aa8d5498cb0bc744c062a266e\",\"expiresAt\":4102444800}",
+      "parsed": {
+        "v": 2,
+        "namespace": "tab\there\nnew\u0001\u001f",
+        "serverId": "a/b<x>&y z ",
+        "inviterPubkey": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+        "nonce": "cccccccccccccccccccccccccccccccc",
+        "sig": "aa2a3bbcb3830df4440013273716229304100f1228472d797d5c364d2bdb5672e56492fdaa10a2f909bb9d4ef92a8481155ba57aa8d5498cb0bc744c062a266e",
+        "expiresAt": 4102444800
+      }
     }
   ],
   "negatives": [

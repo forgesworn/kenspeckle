@@ -379,7 +379,8 @@ for (const fileName of files.filter((name) => name.startsWith('bond.words.'))) {
 
 // Invite v2 canonical signing encoding. The digest is recomputed HERE from the documented formula
 // (not via the library) so the vector pins the spec, and the frozen sig is reproduced with BIP-340
-// using the vector's aux randomness.
+// using the vector's aux randomness. The JSON-escaping cases (non-ASCII, `"`, `\`, control
+// characters) were generated from hand-written canonical text by scripts/gen-invite-escape-vectors.mjs.
 for (const fileName of files.filter((name) => name.startsWith('invite.'))) {
   const vector = loadVector(fileName)
   if (!vector) continue
