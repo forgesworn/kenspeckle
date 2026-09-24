@@ -1,0 +1,80 @@
+{
+  "description": "Handshake wire golden vector for @forgesworn/kenspeckle ./handshake. buildHandshakePayload(input) MUST produce `wire` byte-for-byte (UTF-8 of this string): fixed key order v, pubkey, nonce, displayName, personas; hex lowercased; only allowlisted fields. parseHandshakePayload(wire) MUST deep-equal `parsed`. Every `negatives[].wire` MUST be rejected with an error containing `error`.",
+  "cases": [
+    {
+      "name": "minimal",
+      "input": {
+        "pubkey": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        "nonce": "0123456789abcdef0123456789abcdef"
+      },
+      "wire": "{\"v\":1,\"pubkey\":\"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"nonce\":\"0123456789abcdef0123456789abcdef\"}",
+      "parsed": {
+        "v": 1,
+        "pubkey": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        "nonce": "0123456789abcdef0123456789abcdef"
+      }
+    },
+    {
+      "name": "full; caller key order, uppercase hex and extra fields are normalised away",
+      "input": {
+        "personas": [
+          {
+            "label": "work",
+            "pubkey": "C6047F9441ED7D6D3045406E95C07CD85C778E4B8CEF3CA7ABAC09B95C709EE5",
+            "secret": "x"
+          },
+          {
+            "pubkey": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"
+          }
+        ],
+        "displayName": "Wren 🐦",
+        "privkey": "SECRET",
+        "nonce": "0123456789ABCDEF0123456789ABCDEF",
+        "pubkey": "79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798"
+      },
+      "wire": "{\"v\":1,\"pubkey\":\"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"nonce\":\"0123456789abcdef0123456789abcdef\",\"displayName\":\"Wren 🐦\",\"personas\":[{\"pubkey\":\"c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5\",\"label\":\"work\"},{\"pubkey\":\"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9\"}]}",
+      "parsed": {
+        "v": 1,
+        "pubkey": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        "nonce": "0123456789abcdef0123456789abcdef",
+        "displayName": "Wren 🐦",
+        "personas": [
+          {
+            "pubkey": "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+            "label": "work"
+          },
+          {
+            "pubkey": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"
+          }
+        ]
+      }
+    }
+  ],
+  "negatives": [
+    {
+      "name": "v2",
+      "wire": "{\"v\":2,\"pubkey\":\"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"nonce\":\"0123456789abcdef0123456789abcdef\"}",
+      "error": "version"
+    },
+    {
+      "name": "off-curve pubkey",
+      "wire": "{\"v\":1,\"pubkey\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"nonce\":\"0123456789abcdef0123456789abcdef\"}",
+      "error": "curve point"
+    },
+    {
+      "name": "nonce not 16 bytes",
+      "wire": "{\"v\":1,\"pubkey\":\"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"nonce\":\"abcd\"}",
+      "error": "nonce"
+    },
+    {
+      "name": "duplicate persona",
+      "wire": "{\"v\":1,\"pubkey\":\"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"nonce\":\"0123456789abcdef0123456789abcdef\",\"personas\":[{\"pubkey\":\"c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5\"},{\"pubkey\":\"c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5\"}]}",
+      "error": "duplicates"
+    },
+    {
+      "name": "persona equal to presenting pubkey",
+      "wire": "{\"v\":1,\"pubkey\":\"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"nonce\":\"0123456789abcdef0123456789abcdef\",\"personas\":[{\"pubkey\":\"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\"}]}",
+      "error": "duplicates"
+    }
+  ]
+}

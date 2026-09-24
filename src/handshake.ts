@@ -10,9 +10,12 @@
 // `buildHandshakePayload` stamps `v:1` and UTF-8-encodes the JSON. `parseHandshakePayload` hardens
 // every field of this attacker-controlled blob per signet-app security conventions:
 //   - an 8192-byte cap is enforced BEFORE any decode/parse work (cheap DoS guard);
-//   - `v` must be exactly 1; `pubkey` is 64-hex; `nonce` is exactly 32 hex chars (16 bytes);
+//   - `v` must be exactly 1; `pubkey` is 64-hex AND a valid curve x; `nonce` is exactly 32 hex chars;
 //   - hex fields are lowercase-normalized on output so two callers agree byte-for-byte;
-//   - `personas` is a bounded array (≤16) of `{ pubkey: 64-hex, label?: string }`.
+//   - `personas` is a bounded array (≤16) of `{ pubkey: 64-hex on-curve, label?: string }`, with no
+//     duplicates and none equal to `pubkey`.
+// `buildHandshakePayload` builds from an explicit field allowlist and runs the parser over its own
+// output, so it cannot emit anything the peer would reject — or anything the caller didn't mean to send.
 //
 // One field is INTENTIONALLY not touched: `displayName` is returned verbatim. It is
 // attacker-controlled free text — the CONSUMER truncates/sanitizes it at the point of display.
@@ -28,6 +31,8 @@
 // per-file ambient was retired in favour of one project-wide `@types/node` opt-in. Runtime is
 // unaffected (these are real globals); @types/node only teaches `tsc` their shape and adds NO runtime
 // dependency (it's a devDep, and its declarations emit nothing into `dist/`).
+
+import { secp256k1 } from '@noble/curves/secp256k1.js'
 
 /** The persona/pubkey exchange that bootstraps a kith bond. */
 export interface HandshakePayload {
@@ -68,22 +73,52 @@ function normHex64(value: unknown, field: string): string {
   return value.toLowerCase()
 }
 
+/** Validate a 64-hex pubkey that must also be a valid BIP-340 x-coordinate (liftable with even y).
+ *  Catching an off-curve key here beats a later `deriveBondSecret: invalid curve point`. */
+function normPubkey(value: unknown, field: string): string {
+  const hex = normHex64(value, field)
+  try {
+    secp256k1.Point.fromHex('02' + hex)
+  } catch {
+    throw new Error(`handshake: ${field} is not a valid curve point`)
+  }
+  return hex
+}
+
 /**
- * Build the handshake wire blob: `{ v: 1, ...p }` → `JSON.stringify` → UTF-8 bytes.
+ * Build the handshake wire blob from an explicit ALLOWLIST of fields → `JSON.stringify` → UTF-8 bytes.
  *
- * Validates `pubkey` (64-hex) and `nonce` (32-hex) up front — defence in depth, so a caller can't
- * mint a structurally-invalid handshake that only its peer's parser would reject. The input object
- * is not mutated (the `v` key is spread onto a fresh object).
+ * Only `pubkey`, `nonce`, `displayName` and `personas[].{pubkey,label}` are copied — never the caller's
+ * object. TypeScript's excess-property check does not apply to a non-literal argument, so spreading
+ * `p` would put whatever else the caller's object held (a `privkey`, say) on the wire. Hex is
+ * lowercased, and the built bytes are run through `parseHandshakePayload` so a caller cannot mint a
+ * handshake its peer's parser would reject (oversize, >16 personas, off-curve key, bad label type…).
+ * The key order is fixed (`v, pubkey, nonce, displayName, personas`), so equal inputs give equal bytes.
  */
 export function buildHandshakePayload(p: Omit<HandshakePayload, 'v'>): Uint8Array {
+  if (!isRecord(p)) throw new Error('handshake: payload must be an object')
   if (typeof p.pubkey !== 'string' || !HEX64.test(p.pubkey)) {
     throw new Error('handshake: pubkey must be 64 hex chars')
   }
   if (typeof p.nonce !== 'string' || !HEX32.test(p.nonce)) {
     throw new Error('handshake: nonce must be 32 hex chars (16 bytes)')
   }
-  const payload: HandshakePayload = { v: 1, ...p }
-  return new TextEncoder().encode(JSON.stringify(payload))
+  const payload: HandshakePayload = { v: 1, pubkey: p.pubkey.toLowerCase(), nonce: p.nonce.toLowerCase() }
+  if (p.displayName !== undefined) payload.displayName = p.displayName
+  if (p.personas !== undefined) {
+    if (!Array.isArray(p.personas)) throw new Error('handshake: personas must be an array')
+    payload.personas = p.personas.map((el) => {
+      if (!isRecord(el)) throw new Error('handshake: each persona must be an object')
+      const persona: { pubkey: string; label?: string } = {
+        pubkey: typeof el.pubkey === 'string' ? el.pubkey.toLowerCase() : el.pubkey,
+      }
+      if (el.label !== undefined) persona.label = el.label
+      return persona
+    })
+  }
+  const bytes = new TextEncoder().encode(JSON.stringify(payload))
+  parseHandshakePayload(bytes) // same validators as the peer; throws on anything it would reject
+  return bytes
 }
 
 /**
@@ -112,7 +147,7 @@ export function parseHandshakePayload(blob: Uint8Array): HandshakePayload {
   if (!isRecord(raw)) throw new Error('handshake: payload must be a JSON object')
   if (raw.v !== 1) throw new Error('handshake: unsupported version (v must be 1)')
 
-  const pubkey = normHex64(raw.pubkey, 'pubkey')
+  const pubkey = normPubkey(raw.pubkey, 'pubkey')
 
   if (typeof raw.nonce !== 'string' || !HEX32.test(raw.nonce)) {
     throw new Error('handshake: nonce must be 32 hex chars (16 bytes)')
@@ -134,9 +169,16 @@ export function parseHandshakePayload(blob: Uint8Array): HandshakePayload {
     if (raw.personas.length > PERSONAS_CAP) {
       throw new Error(`handshake: personas exceeds cap of ${PERSONAS_CAP}`)
     }
+    // Personas must be distinct from each other and from the presenting pubkey — a duplicate or a
+    // restatement of `pubkey` would count one key twice in whatever the consumer does with the list.
+    const seen = new Set<string>([pubkey])
     out.personas = raw.personas.map((el): { pubkey: string; label?: string } => {
       if (!isRecord(el)) throw new Error('handshake: each persona must be an object')
-      const pPubkey = normHex64(el.pubkey, 'persona pubkey')
+      const pPubkey = normPubkey(el.pubkey, 'persona pubkey')
+      if (seen.has(pPubkey)) {
+        throw new Error('handshake: persona pubkey duplicates another persona or the presenting pubkey')
+      }
+      seen.add(pPubkey)
       const persona: { pubkey: string; label?: string } = { pubkey: pPubkey }
       if (el.label !== undefined) {
         if (typeof el.label !== 'string') throw new Error('handshake: persona label must be a string')
