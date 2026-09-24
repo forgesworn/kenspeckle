@@ -466,6 +466,12 @@ export function parseFilterPublicationResult(
   }
   // 3. Nostr event signature (transport integrity).
   if (!verifyEvent(event)) return { ok: false, reason: 'bad-signature' }
+  //    nostr-tools caches a passed verification on a symbol that an object spread copies, so a
+  //    `{ ...verifiedEvent, tags: null }` skips re-validation above. Re-check the tag shape here
+  //    (wire-parsed JSON can't hit this) so the tag lookups below can never throw.
+  if (!Array.isArray(event.tags) || !event.tags.every((t) => Array.isArray(t))) {
+    return { ok: false, reason: 'bad-signature' }
+  }
   // 4. Correct kind.
   if (event.kind !== KINDRED_FILTER_KIND) return { ok: false, reason: 'wrong-kind' }
 

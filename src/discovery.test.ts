@@ -1137,6 +1137,20 @@ describe('parseFilterPublicationResult — never throws on a malformed event arg
     })
   })
 
+  it('rejects a spread copy of a verified event whose tags were replaced (cached-verdict bypass)', () => {
+    // `finalizeEvent` caches a passed verification on a symbol that the spread copies, so
+    // `verifyEvent` returns true without re-checking; the tag-shape guard must still catch it.
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 1)
+    const template = buildFilterPublication({ namespace: NAMESPACE, serverId: SERVER_ID, blob, keyed: false, epoch: 1 })
+    const verified = finalizeEvent(template, server.sk)
+    for (const tags of [null, 'x', [null], [['d', 'x'], 'n']]) {
+      const tampered = { ...verified, tags } as unknown as NostrEvent
+      expect(() => parseFilterPublicationResult(tampered, opts)).not.toThrow()
+      expect(parseFilterPublicationResult(tampered, opts)).toEqual({ ok: false, reason: 'bad-signature' })
+    }
+  })
+
   it('parseFilterPublication (the null-collapsing wrapper) also never throws on these', () => {
     expect(() => parseFilterPublication(null as unknown as NostrEvent, opts)).not.toThrow()
     expect(parseFilterPublication(null as unknown as NostrEvent, opts)).toBeNull()
