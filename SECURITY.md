@@ -163,11 +163,13 @@ the persona escape hatch; it does not make discovery anonymous.
 
 ### 8. Zeroization honesty
 
-Private-key **byte copies** created internally (`deriveBondSecret`,
-`buildJoinInvite`, `buildOptOutRequest`) are wiped with `.fill(0)` in a `finally`.
-**However:** the `BigInt` scalar and the ECDH point limbs that `@noble` derives
-internally are **immutable / not reachable** from the call site and **cannot be
-zeroized** here. A private key passed in as a JS **string** is likewise immutable
+Where kenspeckle hands `@noble` a private-key **byte copy** (`buildJoinInvite`,
+`buildOptOutRequest`), that copy is wiped with `.fill(0)` in a `finally`.
+`deriveBondSecret` makes **no** zeroization claim at all: it never makes a byte
+copy of the key (an earlier version made one, never used it and wiped it, which
+protected nothing — it was removed). **In every case** the `BigInt` scalar and the
+ECDH point limbs that `@noble` derives internally are **immutable / not reachable**
+from the call site and **cannot be zeroized** here. A private key passed in as a JS **string** is likewise immutable
 and persists until garbage-collected. So zeroization is **best-effort on the byte
 copies only** — kenspeckle does **not** claim full zeroization. A future Rust/WASM port
 should take secrets as **bytes** and wipe the scalar and point deterministically.
@@ -185,6 +187,65 @@ A non-JSON blob surfaces a clear `Error`, never a raw `SyntaxError`.
 (handshake, entries) and any site/persona label are **not** sanitized or truncated
 by kenspeckle. Sanitizing at the parse boundary would mangle legitimate names and give
 a false sense of safety. **The consumer truncates/escapes at the point of display.**
+The companion rail is the exception: its display text (pairing `appName`, grant
+envelope `displayName` / `nip05`, returned kens) is control/bidi-stripped and
+code-point-truncated at the boundary, because it crosses from another app.
+
+**Builders serialise an allowlist, never the caller's object.** TypeScript's
+excess-property check does not apply to a non-literal argument, so
+`build(entry)` with an object that also carries `privkey` / `sharedSecret` would
+otherwise put it on the wire. `buildHandshakePayload`, `buildPairingAck`,
+`buildGrantEnvelope`, `buildReturnEnvelope` and `serializeJoinInvite` copy only
+their declared fields.
+
+### 10. Spoken-word guessing odds
+
+A bond word is **one word from a 2048-word list — 11 bits**. `verifyBondWord` with
+`tolerance` `t` accepts any of `2t + 1` counterparty words (one per counter in the
+window), so a blind guess succeeds with probability about `(2t + 1) / 2048`:
+
+| `tolerance` | accepted words | chance per guess |
+|-------------|----------------|------------------|
+| 0 | 1 | ≈ 0.05% |
+| 1 (signet-me) | 3 | ≈ 0.15% |
+| 10 (the cap) | 21 | ≈ 1% |
+
+The library has **no rate limit** and no lockout. The protection is the human in
+the loop: two people saying a word to each other, once. A consumer that lets an
+attacker submit many guesses (an automated channel, a retry loop) MUST add its own
+limit, and SHOULD keep `tolerance` at 0–1 outside signet-me migration.
+
+### 11. Bond attestations: revocation is only visible on the latest version
+
+`verifyBondAttestation` rejects revoked (`["status","revoked"]`), expired (NIP-40
+`expiration`, `valid_to`), not-yet-active and self-attestations, and requires the
+`d` tag to be the one a revocation targets. But it judges **only the event it is
+given**. A revocation replaces the attestation at its address; an older copy of the
+attestation, served by a relay that missed the revocation, still verifies on its
+own. A consumer counting attestations MUST fetch the latest event at
+`(attester, 31000, kindred-bond:<subject>)` first. Retract with
+`buildBondRevocation` (a signed, visible statement); the kind-5
+`retractBondAssertion` is only a request to forget.
+
+### 12. Invites are bearer tokens until the consumer dedupes them
+
+A `JoinInvite` signature proves the inviter vouched for `(namespace, serverId)`;
+it does not make the invite single-use. Anyone holding the bytes can present them
+until `expiresAt` (if set). Dedupe on `(inviterPubkey, nonce)` where one-time use
+matters; the 16-byte nonce minimum makes accidental collisions negligible. (The v1
+invite encoding let a signature be re-targeted to a different
+`(namespace, serverId)` split; v2 fixed that and v1 is no longer accepted — see
+PROTOCOL.md §6.2.)
+
+### 13. Backup key: do not reuse it
+
+The self-backup (`exportEntriesEncrypted`) binds a `"KSBK" ‖ version` header as AAD,
+so a v1 backup cannot be confused with another ciphertext made under the same key.
+`importEntries` still reads **legacy** header-less backups (`nonce ‖ ciphertext`,
+no AAD) so existing backups stay restorable. That keeps the old weakness on the
+read side: a header-less XChaCha20-Poly1305 ciphertext produced by some **other**
+scheme under the same 32-byte key would be decrypted and (if it parses as a
+roster) imported. Use a key dedicated to backups.
 
 ## What is genuinely removed (the honest upside)
 
@@ -216,7 +277,7 @@ In scope:
 
 - **Input-validation bypass / unbounded allocation** in any wire parser
   (`parseHandshakePayload`, `parseJoinInvite`, `parseEntry`, `parseFilterPublication`,
-  `importEntries`) — a malformed blob that reads past its bounds or triggers an
+  `importEntries`, `parseGrantEnvelope`, `parsePairingRequest`, `parsePairingAck`) — a malformed blob that reads past its bounds or triggers an
   attacker-sized allocation.
 - **Migration-vector drift** — any way `deriveBondSecret` stops reproducing the
   frozen `fd2644…26f9` vector (that breaks every migrated contact's verification
@@ -226,6 +287,11 @@ In scope:
 - **Forged-filter acceptance** — any way `parseFilterPublication` returns a result
   for a blob whose Nostr signature or in-blob Schnorr signature was tampered.
 - **Annotations leak** — any path that serialises `PrivateAnnotations` onto a wire.
+- **Invite re-targeting** — any way to make `parseJoinInvite` accept a signature for a
+  different field tuple than the inviter signed.
+- **Revocation bypass** — any way to make `verifyBondAttestation` return `ok` for a
+  revoked, expired or self-attestation, or to make `applyCompanionSnapshot` restore
+  contacts after a revocation.
 
 Out of scope (by design, documented above):
 
@@ -237,3 +303,8 @@ Out of scope (by design, documented above):
   (§8) — a JS-runtime limitation.
 - Attacker-controlled display strings returned **verbatim** (§9) — truncation is the
   consumer's responsibility by design.
+- Brute-forcing a spoken word through an unlimited-retry channel the consumer built
+  (§10) — the odds are documented; rate limiting is the consumer's.
+- Accepting a stale, un-revoked copy of an attestation the consumer did not refresh
+  (§11), or replay of an invite the consumer did not dedupe (§12).
+- Legacy (header-less) backup reading under a key reused elsewhere (§13).

@@ -8,7 +8,8 @@ and the build/parse asymmetry. `README.md` is the usage guide; `SECURITY.md` is 
 honest privacy posture (read it — several intuitive guarantees are deliberately
 **not** made).
 
-`v1` for every wire format below (`HandshakePayload.v = 1`, `JoinInvite.v = 1`,
+`v1` for every wire format below except the invite, which is `v2` since its
+canonical encoding changed (`HandshakePayload.v = 1`, `JoinInvite.v = 2`,
 `KFLT format_version = 1` in the sibling @forgesworn/tessera-kit).
 
 ## Notation
@@ -25,7 +26,9 @@ honest privacy posture (read it — several intuitive guarantees are deliberatel
 | `lift_x_even(x)` | the secp256k1 point with x-coordinate `x` and **even** y (the BIP340 `02`-prefix lift) |
 
 All hex on the wire is **lowercase**. Every parser lowercase-normalizes hex fields
-on output so two independent callers agree byte-for-byte.
+on output so two independent callers agree byte-for-byte — except the invite
+parser, which accepts **only** lowercase hex so each invite has exactly one wire
+spelling (§6.3).
 
 ---
 
@@ -106,17 +109,17 @@ expectation.
 
 ### 1.6 Zeroization contract (stated honestly)
 
-`deriveBondSecret` zeroizes the `privBytes` byte copy in a `finally`. It does
-**not** — and **cannot** — wipe:
+`deriveBondSecret` makes **no zeroization claim**. The private key arrives as an
+immutable JS **string**, and the ECDH runs on a `BigInt` scalar and point limbs,
+none of which can be wiped from JS. It makes no byte copy of the key. (An earlier
+version made a byte copy, never used it, and wiped it; that protected nothing, so
+it was removed.)
 
-- the `scalar` (`BigInt`s are immutable in JS; there is no in-place clear);
-- the intermediate ECDH point's internal limbs.
-
-So this is **best-effort zeroization of the byte copy only**. A future Rust/WASM
-port MUST zeroize the scalar and the ECDH point. We do not claim full
-zeroization. The same honest limitation applies everywhere kenspeckle handles a
-private key as a JS value (`buildJoinInvite`, `buildOptOutRequest`): the byte copy
-is wiped; the immutable bigint inside `@noble` is not wipeable from the call site.
+Where kenspeckle *does* hand a byte copy of a key to `@noble` (`buildJoinInvite`,
+`buildOptOutRequest`), that copy is wiped with `.fill(0)` in a `finally`. The
+bigint scalar `@noble` derives from it internally is still not wipeable from the
+call site, so that too is best-effort. A future Rust/WASM port MUST take keys as
+bytes and zeroize the scalar and the ECDH point.
 
 ---
 
@@ -145,6 +148,15 @@ The namespace is overridable via an optional `opts` argument for
   output.
 - **The `counter` is the consumer's choice** (time-bucketed or event-based);
   kenspeckle exposes pure functions and takes the counter as a parameter.
+- **Inputs are validated.** `bondWords` throws a `bondWords:` error unless the
+  secret and both pubkeys are 64-hex, the two pubkeys **differ** (a self-bond has
+  no counterparty word) and the namespace is non-empty. `verifyBondWord` returns
+  `{ ok: false }` for a bad pubkey, a self-bond or an empty namespace, and throws
+  only for a malformed secret (a programmer error).
+- **Guessing odds.** A word is one of 2048 (11 bits). With `tolerance` `t` there
+  are `2t + 1` accepted words, so a blind guess succeeds with probability about
+  `(2t + 1) / 2048`: ≈0.05% at `t = 0`, ≈0.15% at `t = 1`, ≈1% at `t = 10`. There is
+  no rate limit in the library (see SECURITY.md).
 - **Verification re-derives, it does not `verifyToken`.** The directional
   `pair\0`-prefixed context inside spoken-token is reachable **only** via
   `deriveDirectionalPair`. So `verifyBondWord` re-derives the expected counterparty
@@ -228,10 +240,23 @@ bond-existence oracle and is deliberately absent).
   optional `["summary", …]`, `["L", "nip-va"]`, `["l", "kindred-bond", "nip-va"]`.
   The caller signs the template; "I verified them" via MY signature alone — a pair
   of these (one each way) proves mutual verification without a shared-secret leak.
-- **`retractBondAssertion(assertion)`** → unsigned kind-5 NIP-09 deletion with
-  `["e", assertion.mineId]`. Signed by the SAME key that signed the original (only
-  the author may delete their event). A network-wide retraction can never be
-  cryptographically guaranteed — NIP-09 is a request.
+- **`buildBondRevocation({ subjectPubHex, reason? })`** → unsigned kind-31000
+  **revocation** via `nostr-attestations`' `createRevocation({ type: 'kindred-bond',
+  identifier: subject, subject })`. This is the **primary** retraction: it
+  republishes the same addressable slot (`d = kindred-bond:<subject>`) with
+  `["status","revoked"]` (plus `["p", subject]`, optional `["reason", …]`), so it
+  replaces the attestation wherever addressable semantics are honoured, and
+  `verifyBondAttestation` rejects it (`reason: 'revoked'`, §6.4). Signed by the
+  SAME key that signed the attestation.
+- **`retractBondAssertion(assertion, { attesterPubHex, subjectPubHex })`** →
+  unsigned kind-5 NIP-09 deletion request, a **supplement** to the revocation. Tags:
+  `["e", mineId]`, `["a", "31000:<attester>:kindred-bond:<subject>"]`,
+  `["k", "31000"]`. `mineId` and both pubkeys must be 64-hex (lowercased). The `a`
+  tag matters: kind 31000 is addressable, and an `e` tag alone deletes one version
+  while a republished version under the same `d` survives. Signed by the SAME key
+  that signed the original. A network-wide retraction can never be
+  cryptographically guaranteed — NIP-09 is a request, which is why the revocation
+  comes first.
 
 `created_at`: `createAttestation` returns an optional `created_at`; kenspeckle stamps
 one if absent so the result satisfies the canonical (nostr-tools) `EventTemplate`
@@ -385,49 +410,109 @@ A `JoinInvite` is the signed "come join this game" token (cold-start bootstrap).
 is **not** a Nostr event — it is a structured token (QR/URL) signed with a
 **custom-payload** Schnorr signature, not `finalizeEvent`.
 
-### 6.1 Canonical signing bytes (verbatim)
+```typescript
+interface JoinInvite {
+  v: 2
+  namespace: string      // non-empty, well-formed UTF-16
+  serverId: string       // non-empty, well-formed UTF-16; MAY contain ':'
+  inviterPubkey: string  // 64 lowercase hex (x-only)
+  nonce: string          // ≥ 16 bytes of lowercase hex (≥ 32 chars, even length)
+  expiresAt?: number     // unix seconds, non-negative safe integer
+  sig: string            // 128 lowercase hex (64-byte BIP-340 signature)
+}
+```
+
+### 6.1 Canonical signing bytes, v2 (verbatim)
 
 ```
-digest = sha256( utf8( "kenspeckle-invite:v1:" + namespace + ":" + serverId
-                       + ":" + inviterPubkey + ":" + nonce
-                       + ":" + (expiresAt ?? '') ) )
-sig    = bytesToHex( schnorr.sign(digest, hexToBytes(inviterPriv)) )
+canonical = JSON.stringify(["kenspeckle-invite", 2, namespace, serverId,
+                            inviterPubkey, nonce, expiresAt ?? null])
+digest    = sha256( utf8(canonical) )
+sig       = bytesToHex( schnorr.sign(digest, hexToBytes(inviterPriv)) )
 ```
 
-`expiresAt` renders as its decimal string, or `''` when absent — so an invite with
-no expiry and one with `expiresAt: 0` produce **different** digests (`…:nonce:` vs
-`…:nonce:0`), which is correct (they are different invites).
+`JSON.stringify` here is ECMAScript's: no whitespace, strings quoted with `"`,
+`"` and `\` backslash-escaped, U+0000–U+001F escaped (`\b \f \n \r \t` or
+`\u00XX`, lowercase hex), everything else emitted as the literal character. A
+non-JS implementation must produce the same bytes. `expiresAt` is a safe integer,
+so it always renders as plain decimal digits; an absent expiry renders `null`, so
+an invite with no expiry and one with `expiresAt: 0` have **different** digests.
 
-### 6.2 Why a colon in `serverId` is safe here
+The frozen vector is `vectors/invite.v2.json` (checked by
+`scripts/check-vectors.mjs`): it pins `canonical`, `digest`, a BIP-340 `sig` made
+with fixed aux randomness, the wire bytes, and a set of inputs that MUST be
+rejected, including the cross-field shift below.
 
-`serverId` is free-form and MAY contain colons. That is safe — **unlike**
-@forgesworn/tessera-kit's capability token, whose canonical string was the **sole** wire carrier
-(an embedded colon there could shift field boundaries, so it bans colons). Here the
-invite is parsed from a structured **JSON object** and the signature binds the exact
-field **values**; the canonical string is only ever **recomputed from the
-already-parsed fields**, never re-split out of a flat string. So a colon in
-`serverId` cannot create field-boundary ambiguity. (Every field is still validated —
-defence in depth.)
+### 6.2 Why the encoding is a JSON array (and why v1 was withdrawn)
+
+v1 signed the colon-joined string
+`"kenspeckle-invite:v1:" + namespace + ":" + serverId + ":" + …`. `namespace` and
+`serverId` are free text that may contain `:`, so that string was **not
+injective**: two different field tuples could flatten to the same bytes. An invite
+signed for `{ namespace: "game", serverId: "eu:prod" }` verified as
+`{ namespace: "game:eu", serverId: "prod" }`. Recomputing the string from the parsed
+JSON fields does **not** help; the signature covers the flattened bytes, and both
+tuples produce them. (Earlier versions of this document claimed a colon was safe
+for that reason. That claim was wrong.)
+
+A JSON array quotes and escapes every string, so distinct tuples always produce
+distinct bytes and a `:` (or a `"`) in any field is harmless. One more collapse is
+closed: `utf8()` maps a lone UTF-16 surrogate to U+FFFD, so `"\uD800"` and
+`"\uFFFD"` would encode alike. Strings that are not well-formed UTF-16 are
+therefore **rejected at build and at parse**.
+
+**v1 invites are not accepted.** There is no fallback: nothing consumed invites
+before v2, and a v1 verifier path would keep the forgery above alive.
 
 ### 6.3 Parse hardening
 
 `parseJoinInvite(blob, now?)`: 8192-byte size cap **before** decode/parse; clear
-`Error` for non-JSON (no raw `SyntaxError` leak); `v === 1`; hex-field + nonce
-validation; **recompute** the canonical digest from the parsed fields and
-`schnorr.verify` against the embedded `inviterPubkey`; reject when `now > expiresAt`
-(expiry is **exclusive** — `now === expiresAt` is still valid; `now` is injectable
-for deterministic tests). `buildJoinInvite` additionally asserts at build time that
-`schnorr.getPublicKey(priv) === inviterPubkey`, so a caller cannot mint an invite
-claiming a key it doesn't control.
+`Error` for non-JSON (no raw `SyntaxError` leak); `v === 2`; `namespace` and
+`serverId` non-empty and well-formed; `inviterPubkey`, `nonce` (≥ 16 bytes) and
+`sig` **lowercase** hex (one wire spelling per invite); `expiresAt`, if present, a
+non-negative safe integer; **recompute** the canonical digest from the parsed
+fields and `schnorr.verify` against the embedded `inviterPubkey`; reject when
+`now > expiresAt` (expiry is **exclusive** — `now === expiresAt` is still valid;
+`now` is injectable for deterministic tests).
+
+`buildJoinInvite(p, inviterPriv, now?)` applies the same field rules (hex input may
+be any case and is lowercased), asserts `schnorr.getPublicKey(priv) ===
+inviterPubkey` so a caller cannot mint an invite claiming a key it doesn't control,
+and, when `now` is given, refuses an `expiresAt` already in the past.
+`generateInviteNonce()` returns 16 fresh CSPRNG bytes as hex.
+
+**Replay.** A valid signature does not make an invite single-use. An inviter or
+server that wants one-time invites MUST remember redeemed `(inviterPubkey, nonce)`
+pairs and refuse a repeat (until `expiresAt`, if set). The 16-byte nonce minimum
+keeps those pairs from colliding by accident.
 
 ### 6.4 Single-attestation verify (`verifyBondAttestation`)
 
-`verifyBondAttestation(event)` is the anti-sybil **brick** (spec §9.2). Checks, in
-order: (a) `verifyEvent` (sig + id); (b) kind `31000`; (c) a
-`["type","kindred-bond"]` tag (the exact discriminator `nostr-attestations` emits —
-verified against the real `buildBondAttestation` output, not guessed); (d) a subject
-`["p", <64-hex>]` tag. Returns `{ ok, attesterPubHex: event.pubkey, subjectPubHex }`
-(`ok:true` on success; `{ ok:false }` otherwise).
+`verifyBondAttestation(event, now?)` is the anti-sybil **brick** (spec §9.2).
+Checks, in order, returning `{ ok: false, reason }` on the first failure:
+
+| # | check | `reason` |
+|---|-------|----------|
+| a | `verifyEvent` (sig + id) | `bad-signature` |
+| b | kind `31000` | `wrong-kind` |
+| c | a `["type","kindred-bond"]` tag | `not-kindred-bond` |
+| d | **exactly one** `["p", <64-hex>]` tag | `bad-subject` |
+| e | exactly one `d` tag, equal to `kindred-bond:<lowercase subject>` | `d-tag-mismatch` |
+| f | subject ≠ attester | `self-attestation` |
+| g | `nostr-attestations` `isValid(event, now)` | `revoked`, `expired`, `not-yet-active`, `claim-expired` |
+
+(g) rejects a `["status","revoked"]` event, a passed NIP-40 `expiration`, a future
+`valid_from` and a passed `valid_to`. `now` defaults to the wall clock (unix
+seconds), the same convention as `parseJoinInvite`. On success it returns
+`{ ok: true, attesterPubHex, subjectPubHex }`, **both lowercased**, so a
+distinct-count over them cannot be inflated by case. Check (e) ties the event to
+the address a `buildBondRevocation` for that subject overwrites; an attestation
+parked at any other `d` could never be revoked.
+
+**Fetch the latest version.** (g) only sees the event it is given. A revocation
+*replaces* the attestation at `(attester, 31000, d)`; an older, non-revoked copy
+still verifies on its own. A consumer MUST query the latest event at that address
+(and SHOULD honour kind-5 deletions) before counting it.
 
 This is **per-attestation verification ONLY**. Counting a member's attestations into
 a set of **distinct verified humans** (the collective/guild sybil-resistance of
@@ -459,12 +544,31 @@ interface HandshakePayload {
 }
 ```
 
-`buildHandshakePayload` stamps `v:1` and UTF-8-encodes the JSON.
+`buildHandshakePayload` builds the object from an explicit **allowlist** —
+`v: 1, pubkey, nonce, displayName?, personas?[{ pubkey, label? }]`, in exactly that
+key order, hex lowercased — and UTF-8-encodes the JSON. Nothing else from the
+caller's object reaches the wire (TypeScript's excess-property check does not apply
+to non-literal arguments). It then runs `parseHandshakePayload` over its own output
+and throws if the peer would reject it.
+
 `parseHandshakePayload` enforces: 8192-byte cap **before** decode; `v === 1`;
-`pubkey` 64-hex; `nonce` exactly 32-hex; `personas` a ≤16 array of
-`{ pubkey: 64-hex, label? }`. `displayName` is validated as a string but returned
-**verbatim** — sanitizing here would mangle legitimate names and give false safety;
-the consumer truncates at the point of display.
+`pubkey` 64-hex **and a valid curve x-coordinate** (liftable with even y);
+`nonce` exactly 32-hex; `personas` a ≤16 array of `{ pubkey: 64-hex on-curve,
+label? }`, with **no duplicates** and none equal to `pubkey`. `displayName` is
+validated as a string but returned **verbatim** — sanitizing here would mangle
+legitimate names and give false safety; the consumer truncates at the point of
+display.
+
+The frozen vector is `vectors/handshake.v1.json`: exact build bytes for given
+inputs (including extra fields that must be dropped) and inputs that MUST be
+rejected.
+
+**Open question — the nonce.** This section calls the nonce the "ceremony counter
+seed", but no derivation from the two peers' nonces to a spoken-word `counter` is
+specified, and §2 says the counter is the consumer's choice. kenspeckle
+implements no such derivation. Until one is specified, the nonce is only
+freshness that a consumer may use; two consumers will not agree on a counter from
+it without an out-of-band convention.
 
 ---
 
@@ -519,10 +623,46 @@ data loss through old code, not breakage; land kenspeckle and its consumers toge
 The companion rail is a pure producer/consumer wire contract. A companion
 builds `signet-grant://pair?...`; Signet parses it and returns an encrypted
 kind-21237 acknowledgement; Signet then publishes encrypted kind-30078
-replaceable snapshots under `d=signet:companion-rail`. The shared reducer
-accepts only a strictly newer `publishedAt`; malformed and stale envelopes
-return the exact input state, while a newer `revoked:true` tombstone clears
-contacts and pairing state.
+replaceable snapshots under `d=signet:companion-rail`.
+
+**Pairing request.** `parsePairingRequest` accepts the native
+`signet-grant:` URI, an `https:` carrier URL, or a bare query; anything else
+before a `?` is rejected (`bad-scheme`). Input longer than 4096 characters is
+rejected; a `#fragment` is ignored. `t` must be plain decimal digits (no `0x`,
+exponent, sign or padding). `challenge` is 16–128 hex characters (build and
+parse). The caller's `nowSec` / `freshnessSeconds` must be finite and
+non-negative, or the call throws — a `NaN` window would silently disable the
+freshness check.
+
+**Ack.** `buildPairingAck` serialises the parsed projection (`v, railPubkey,
+dTag, snapshotRelay, grantedScope, challenge`), never the caller's object, and
+`parsePairingAck` requires a 16–128-hex challenge equal to the expected one.
+
+**Snapshots.** The grant envelope is
+`{ v: 1, scope: { tiers, personas }, contacts: GrantContactView[], publishedAt,
+revoked?: true }`. `publishedAt` (and each contact's `addedAt`) MUST be a
+non-negative safe integer; anything else (`1e400` parses as `Infinity`) makes the
+envelope (or the contact) malformed. The parser lowercases hex, strips
+control/bidi characters from display text, returns a projected `scope`, drops
+contacts outside that scope (tier not listed, or an owner persona not listed),
+and reads at most 5000 contacts; `buildGrantEnvelope` projects the same allowlist
+and throws if a contact would not survive that parse.
+
+**Reducer.** The consumer MUST check that a snapshot event is signed by
+`pairing.railPubkey` before handing its decrypted content to
+`applyCompanionSnapshot`. The reducer then:
+
+1. returns the exact input state for a malformed envelope;
+2. returns the exact input state for **anything** once `state.revoked === true`.
+   **Revocation is terminal for the pairing** — a later non-revoked snapshot can
+   never bring contacts back. Resuming needs a new pairing, after which the app
+   starts from a fresh state (`revoked: false`, no `lastPublishedAt`);
+3. applies a `revoked: true` tombstone **regardless of `publishedAt` order**
+   (clearing contacts and pairing, `lastPublishedAt = max(old, new)`), so a
+   producer clock error that published a far-future snapshot cannot block the
+   owner's revocation;
+4. otherwise accepts only a strictly newer `publishedAt`, returning the exact
+   input state for a stale one.
 
 Kenspeckle does not open relays, schedule timers, store keys, encrypt content or
 render grant UI. Those are application lifecycle and policy concerns.
@@ -577,6 +717,10 @@ is merely relayed claim rather than first-hand verification.
 
 **Locator grammar — `:` in `<appName>` is escaped as `%3A`.** This is load-bearing, not cosmetic. Without it the grammar is not injective and the namespace is **forgeable**: an app calling itself `Murmurate:trusted` and claiming locator `y` would emit `companion:Murmurate:trusted:y` — byte-identical to legitimate app `Murmurate` claiming locator `trusted:y`. Escaping the single delimiter character means splitting on the first two colons always recovers exactly `(appName, claimed locator)`. Only `:` is escaped, so ordinary names are unchanged. A claimed locator may itself contain `:` — everything after the second colon is the locator verbatim.
 
+The `<appName>` segment is stripped of the same invisible characters as a claimed
+locator (word joiner, BOM, U+E0000 tag characters …) and sliced by code point, so
+`companion:Signet` followed by U+2060 cannot render as plain `companion:Signet`.
+
 A non-finite claimed `confirmedAt` is rejected (`landReturnedKen` throws) rather than clamped, since `Math.min(NaN, now)` is `NaN` and would emit an entry that kenspeckle's own `validateProvenance` rejects.
 
 So real `in-person` evidence survives the journey as `in-person` instead of being
@@ -592,7 +736,8 @@ stops an app claiming a future confirmation to poison recency reasoning.
 | `KINDRED_FILTER_KIND` | `30444` (provisional; matches @forgesworn/tessera-kit) | `./discovery` |
 | `KINDRED_OPTOUT_KIND` | `30445` (provisional) | `./discovery` |
 | bond attestation kind | `31000` (`nostr-attestations` `ATTESTATION_KIND`) | `./bond`, `./invite` |
-| invite canonical prefix | `"kenspeckle-invite:v1:"` | `./invite` |
+| invite canonical array | `["kenspeckle-invite", 2, …]` (`INVITE_DOMAIN`, `INVITE_VERSION`) | `./invite` |
+| invite nonce minimum | `16` bytes (`INVITE_NONCE_MIN_BYTES`) | `./invite` |
 | d-tag prefix | `"kindred:members:"` | `./discovery` |
 | handshake / invite blob cap | `8192` bytes | `./handshake`, `./invite` |
 | filter blob cap | `64 MiB` (@forgesworn/tessera-kit `KFLT_MAX_BLOB_BYTES`) | `./discovery` |
@@ -603,3 +748,27 @@ stops an app claiming a future confirmation to poison recency reasoning.
 | companion return d-tag | `"signet:companion-return"` | `./companion-rail` |
 | return additions cap | `50` | `./companion-rail` |
 | return corroborations cap | `8` per addition | `./companion-rail` |
+| pairing challenge length | `16`–`128` hex chars (`PAIRING_CHALLENGE_MAX`) | `./companion-rail` |
+| pairing input cap | `4096` chars (`PAIRING_INPUT_MAX`) | `./companion-rail` |
+| grant envelope contacts cap | `5000` (`GRANT_CONTACTS_CAP`) | `.` (grant envelope) |
+| backup header | `"KSBK" ‖ 0x01` (`BACKUP_FORMAT_VERSION = 1`) | `.` (backup) |
+
+## 12. Encrypted self-backup (`.` / `exportEntriesEncrypted`)
+
+```
+header = utf8("KSBK") ‖ 0x01                        // magic + format version (5 bytes)
+blob   = header ‖ nonce(24) ‖ XChaCha20-Poly1305(key, nonce, aad = header)(utf8(JSON.stringify(entries)))
+```
+
+`key` is 32 bytes; the nonce is fresh CSPRNG output per export. The plaintext is
+the roster **including** private annotations. Binding the header as AAD means a
+flipped version byte or magic fails authentication, and a ciphertext sealed under
+the same key by some other scheme is not accepted as a v1 backup.
+
+`importEntries` reads v1 blobs and, for continuity, **legacy** blobs written
+before the header existed: `nonce(24) ‖ ciphertext`, no AAD. If a blob starts
+with the header but does not authenticate as v1, it is retried as legacy (a legacy
+nonce begins with the header bytes with probability 2⁻⁴⁰). Legacy blobs are never
+written. Because legacy reading is kept, the domain separation above is one-way:
+a header-less ciphertext made by another scheme under the same key would still be
+read as a legacy backup — do not reuse the backup key for anything else.
