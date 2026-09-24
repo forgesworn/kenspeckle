@@ -4,6 +4,163 @@ All notable changes to `@forgesworn/kenspeckle` are documented here. The format 
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — Unreleased
+
+Security-audit fix pass over `ken`/`discovery`/`model`/`validate`/`types`, plus
+packaging and CI hardening. Findings below are from an internal audit; the
+`H`/`M`/`L` labels are severity (High/Medium/Low), not part of any public API.
+
+### Security (breaking)
+
+- **H4 — `toWire`/`serializeEntry` now strip `sharedSecret`.** Previously only
+  `annotations` was excluded, so code trusting the "wire-safe" name could publish
+  a kin/kith's ECDH secret. A `WireEntry` for those tiers no longer round-trips
+  through `parseEntry` (it lacks a field `validateEntryShape` requires) — that is
+  intentional. **New:** `toSyncForm`/`serializeEntryForSync` (types `SyncEntry`)
+  KEEP `sharedSecret`, for the one legitimate case that needs it to travel:
+  syncing a roster across the user's own devices over an already-private
+  transport. Never publish that output. `backup.ts` is unaffected — it already
+  bypassed this module entirely.
+- **M2 — `parseFilterPublication` now requires the event signer to equal the
+  in-blob signer by default** (new `opts.requireAuthorIsSigner`, default `true`),
+  and requires the `n` tag to equal the namespace recovered from the d-tag. The
+  in-blob Schnorr signature covers neither `namespace` nor `serverId`; without
+  this, a genuinely server-signed blob could be re-wrapped under a different
+  `serverId` (or namespace) by anyone and still report the real server's
+  `signerPubkeyHex`. **A previously-parseable cross-serverId republish now
+  returns `null`** unless the caller passes `{ requireAuthorIsSigner: false }`.
+- **L6 — `disclosureFor` now takes the parsed `MembershipFilter`, not
+  `{ salt? }`.** The old signature derived `keyed` from salt PRESENCE, a second
+  source of truth that could disagree with the filter's own `keyed` flag. Callers
+  pass the filter object they already have after `parseFilter`.
+
+### Security
+
+- **H2 — `acceptKenRotation` refuses a replay.** Throws if `rotation.accepted` is
+  already `true` (a double-click / re-invoked accept could previously append the
+  now-current pubkey into `previousPubkeys` again, making `attributeSignature`
+  reject the legitimate current key) or if `rotation.newPubkey` equals the
+  current pin. `rotation.newPubkey` is re-validated as 64-hex.
+- **H3 — a NIP-05 "rollback" to a previously-rotated-away key is flagged, not
+  proposed as an ordinary rotation.** `resolveKen` sets `rotation.rollback: true`
+  when the resolved key is already in `previousPubkeys` (a compromised/reverted
+  domain re-serving an old key). `acceptKenRotation(entry, opts)` refuses a
+  flagged rollback unless `opts.allowRevert` is `true`, and — when accepted —
+  removes the reverted-to key from `previousPubkeys` before re-adding the old
+  current key, so the two never end up in a self-contradictory state.
+  `validateEntryShape` also rejects a stored/imported ken whose `pubkey` appears
+  in its own `previousPubkeys`, or whose `rotation.newPubkey` equals `pubkey`.
+- **M1 — strict NIP-05 validation.** `pinKen`, `pinKenFromNip05`,
+  `validateEntryShape` (parse/import), and `resolveNip05` itself (the choke
+  point) all validate a strict `local@domain` shape: no port, no userinfo, no
+  path/query/fragment, and no bare IP literal. Previously only
+  `pinKenFromNip05` validated shape at all, and even that check was permissive
+  enough (and bypassable via `pinKen`/import) that a crafted `nip05` field could
+  turn `resolveKen` into an arbitrary-URL fetch.
+- **M3 — `discoverPresent` throws if a salt is passed to an OPEN filter.**
+  Mirrors the existing keyed-without-salt guard: either mismatch previously
+  hashed every candidate against the wrong construction and silently returned
+  `[]` — a false "no friends here".
+- **M4 — `pinKen`/`addCorroboration` run the same provenance validation and
+  `MAX_CORROBORATIONS` (64) cap as `importEntries`/`parseEntry`.** A builder
+  could previously mint an entry the parser would later refuse — including one
+  that exported fine but could never be restored from backup.
+- **M5 — `pinKen`/`addCorroboration` reject the reserved `companion:` locator
+  prefix.** That prefix is reserved for `landReturnedKen` (`./companion-rail`)
+  to mark a RELAYED claim; a first-party call minting one let a companion-app
+  claim masquerade as a first-hand confirmation.
+- **L1 — NIP-05 fetch hardening.** `redirect:'error'` (NIP-05 requires ignoring
+  redirects), a bounded `AbortSignal.timeout`, and a size-capped body read
+  before `JSON.parse` (previously unbounded `res.json()`).
+- **L2 — NIP-05 case-folding.** Both the local part and domain are lowercased
+  before querying/looking up, so `Bob@Example.com` matches a server publishing
+  `bob`.
+- **L3 — `resolveKen` no longer proposes a rotation for a `revoked` entry.**
+  Returns it unchanged (no network call), matching the no-`nip05` case.
+- **L4 — `verifyKeyControl` gains opt-in `opts` for partial verifier/freshness
+  binding** (`expectedCreatedAt`/`maxAgeSec`/`verifierTag`), documented as a
+  partial mitigation for a relay/phishing-verifier attack; the full fix needs a
+  dedicated event kind (protocol-level, out of this file's scope). Also
+  documents that single-use nonce tracking is the consumer's responsibility.
+- **L5 — `buildOptOutRequest` rejects a namespace containing a colon** (mirrors
+  `buildFilterPublication`'s d-tag misparse guard) and documents the privacy
+  exposure of a public opt-out event and its lack of replay/freshness semantics.
+- **L7 — documents `parseFilterPublication`'s strict `minEpoch` (`<=`)
+  behaviour**: re-reading the same current publication returns `null`,
+  indistinguishable from a forgery from the return value alone; recommends
+  tracking last-OBSERVED epoch rather than last-accepted, or comparing epochs
+  before calling.
+- **L8 — `validate.ts` strictness inconsistencies closed:** a malformed
+  `bondAssertion` now throws instead of being silently dropped; `pubkey ===
+  ownerPubkey` is rejected; `rotation.newPubkey === pubkey` is rejected;
+  `displayName` (256 chars), `provenance.locator` (1024 chars — see note below),
+  and `annotations.note` (2000 chars) are now length-capped, matching the
+  existing `MAX_CORROBORATIONS` cap's rationale. (`provenance.locator`'s cap is
+  enforced by callers via a new `capLocator` helper, not inside
+  `validateProvenance` itself, which `./companion-rail`'s `landReturnedKen`
+  still uses as a pre-truncation structural check on a raw, not-yet-clamped
+  claim.)
+- **L9 — documents that `tier:'kith'` is a shape, not proof a bond happened.**
+  `parseEntry`/`importEntries` accept any syntactically-valid `sharedSecret`;
+  kenspeckle cannot authenticate a sync/import source itself, so the consumer
+  MUST authenticate/encrypt whatever channel feeds them.
+- **M7 — `WireEntry`/`SyncEntry` and `scopeToPersona` are now built with a
+  genuinely distributive `Omit`** (`DistributiveOmit<T, K> = T extends unknown ?
+  Omit<T, K> : never`, exported from `types.ts`). The previous bare
+  `Omit<KindredEntry, 'annotations'>` collapsed to the INTERSECTION of every
+  tier's keys (TS's `keyof` of a union), silently dropping `sharedSecret`,
+  `provenance`, `relationship` and other tier-specific fields from the type —
+  narrowing on `tier` couldn't see them, and `scopeToPersona` hid the mismatch
+  behind an `as KindredEntry` cast (now removed; no cast needed). Compile-time
+  regression checks live in `types.ts` (not `*.test.ts` — the house `tsconfig`
+  excludes test files from `tsc`, and vitest's esbuild transpile doesn't
+  type-check, so a `@ts-expect-error`/`expectTypeOf` in a test file would never
+  actually run — same reasoning as the pre-existing `_WireAnnotationsExclusionCheck`).
+
+### Packaging & CI
+
+- **H1 — `@forgesworn/tessera-kit` stays a pinned git dependency** (a decision,
+  not a fix — see the sibling-dependency notes in README/CONTRIBUTING). **New:**
+  `scripts/check-publishable-deps.mjs`, wired into `prepublishOnly`, fails the
+  publish if any `dependencies`/`peerDependencies` entry is a git/file/http(s)
+  spec, with a clear error naming the offending package(s). README, llms.txt,
+  and CONTRIBUTING no longer describe a `file:` tarball flow (that was never how
+  this repo's lockfile actually resolved the dependency).
+- **M6 — `release.yml`'s reusable workflow is pinned to a commit SHA** (was the
+  mutable `v0` tag) with the tag in a trailing comment, resolved via `git
+  ls-remote`. This job holds `contents: write` + `id-token: write` (npm
+  provenance); anyone who could move `v0` upstream previously controlled what
+  got published with provenance under this repo's identity.
+- **M6/L11 — crypto/protocol dependencies are never auto-merged.**
+  `dependabot.yml`'s `production-minor` group now excludes `@noble/*`,
+  `@scure/*`, `nostr-tools`, `spoken-token`, and `@forgesworn/*` (they get their
+  own individual PR); `dependabot-auto-merge.yml` also refuses to auto-merge any
+  PR touching one of them by name, as defense in depth.
+- **L10 — `ci.yml`:** adds a top-level `permissions: contents: read`; the
+  install-scoped `FORGESWORN_READ_PAT` git-credential rewrite is now explicitly
+  revoked immediately after `npm ci` (`if: always()`) instead of staying live in
+  the global git config through typecheck/build/vectors/test; fixes the
+  `actions/setup-node` pin comment (said `# v6`, the SHA was already `v7.0.0`).
+- **L11 — `dependabot.yml`'s `nostr-tools` ignore-rule comment corrected:** it
+  claimed "repos pin 2.23.9", but the actual devDependency here is `^2.24.1`.
+
+### Fixed
+
+- **L12 — README:** the `.` API table now lists
+  `toGrantView`/`buildGrantEnvelope`/`parseGrantEnvelope` and the grant types
+  (previously omitted despite `index.ts` exporting them); the discovery example
+  no longer imports the unused `verifyFilterBlob` or reaches past `./discovery`
+  into `@forgesworn/tessera-kit` for `parseFilter` (re-exported); `ken.ts`/
+  `index.ts` doc comments now say `@forgesworn/kenspeckle/ken` /
+  `@forgesworn/kenspeckle/bond` (the actual package name), not bare `kenspeckle/…`.
+
+### Notes
+
+- No stored-entry migration is required for this release: every shape change
+  (`KenRotation.rollback?`, the length caps, the `pubkey`/`previousPubkeys` and
+  `pubkey`/`ownerPubkey` invariants) is additive or tightens validation of
+  already-invalid shapes; a previously-valid entry remains valid.
+
 ## [0.1.0] — Unreleased
 
 First public release: **verified relationships across three social distances** —
@@ -143,11 +300,10 @@ layered over `@forgesworn/tessera-kit`.
   renaming them would change every deployed bond word and published filter.
   Exported identifiers that name those wire strings (`KINDRED_*`) and the model
   types (`KindredEntry`, `KindredTier`) also keep their names.
-- **Publish order + lockfile.** `@forgesworn/tessera-kit` **MUST be on npm first** —
-  `@forgesworn/kenspeckle` depends on it. The lockfile currently resolves the dep via
-  `file:../tessera-kit/forgesworn-tessera-kit-0.1.0.tgz` for local development; once
-  `@forgesworn/tessera-kit` is published, **repoint the lockfile off `file:`** (run
-  `npm install` against the registry) before publishing `kenspeckle`.
+- **`@forgesworn/tessera-kit` dependency.** Not yet on npm; `package.json` resolves
+  it as a **pinned git dependency** (a specific commit, not a moving branch/tag).
+  See `[0.2.0]` below for the `prepublishOnly` guard that enforces this cannot
+  reach a publish unresolved.
 - **signet-me migration caveat (`./bond`).** With **default** opts `bondWords` uses
   namespace `'kindred:bond'`, so its words **differ** from signet-app's `signet-me`
   (`'signet:me'`) — a naive migration silently changes a contact's verification

@@ -23,13 +23,29 @@ updates:
       production-minor:
         dependency-type: production
         update-types: ["patch", "minor"]
+        # Crypto/protocol dependencies are EXCLUDED from this auto-merged group (M6 audit finding):
+        # they get their own individual PR instead of riding along with unrelated production bumps,
+        # so a hold-for-manual-review on one of them never blocks the rest of the group. The
+        # auto-merge workflow (dependabot-auto-merge.yml) also refuses to auto-merge these by name,
+        # as defense in depth — this exclusion just keeps them out of the group in the first place.
+        exclude-patterns:
+          - "@noble/*"
+          - "@scure/*"
+          - "nostr-tools"
+          - "spoken-token"
+          - "@forgesworn/*"
       dev-minor:
         dependency-type: development
         update-types: ["patch", "minor"]
     ignore:
-      # nostr-tools >=2.23.11 corrupts the pool's in-use counter under enablePing
-      # and idle-closes relays with reconnection disabled; repos pin 2.23.9.
-      # Remove once nbd-wtf/nostr-tools#539 is fixed and pins are lifted.
+      # nostr-tools >=2.23.11 corrupted the pool's in-use counter under enablePing and idle-closed
+      # relays with reconnection disabled (nbd-wtf/nostr-tools#539). L11 audit finding: this comment
+      # previously claimed "repos pin 2.23.9", but package.json's actual devDependency here is
+      # `^2.24.1` (peerDependency stays `^2.23.9`, the floor a consumer must support) — i.e. this
+      # repo already moved past the allegedly-buggy range for its OWN devDependency. Keep updates
+      # ignored here (manual bump + re-verify against #539) rather than auto-updated regardless;
+      # this is a crypto/protocol-adjacent dependency (nostr event verification) and is excluded
+      # from the auto-merged group above for the same reason (M6/L11).
       - dependency-name: "nostr-tools"
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]

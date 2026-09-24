@@ -21,8 +21,27 @@ jobs:
         id: meta
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
 
+      # M6 audit finding: crypto/protocol dependencies are NEVER auto-merged, even patch/minor —
+      # they get reviewed by hand. `dependency-names` is a comma-separated list (a grouped PR
+      # carries several), so this blocks the WHOLE PR if ANY dependency in it matches. Belt-and-
+      # braces with the `exclude-patterns` in dependabot.yml, which keeps these out of the
+      # auto-merged group in the first place; this gate also covers an ungrouped/individual PR for
+      # one of them (e.g. a major-version PR, or if the group config ever drifts).
+      - name: Check for crypto/protocol dependencies (never auto-merged)
+        id: gate
+        env:
+          DEPENDENCY_NAMES: ${{ steps.meta.outputs.dependency-names }}
+        run: |
+          if echo "$DEPENDENCY_NAMES" | grep -Eiq '(^|,| )(@noble/|@scure/|nostr-tools|spoken-token|@forgesworn/)'; then
+            echo "blocked=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "blocked=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Enable auto-merge for patch/minor
-        if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor'
+        if: |
+          steps.gate.outputs.blocked == 'false' &&
+          (steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor')
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

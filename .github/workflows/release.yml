@@ -10,6 +10,11 @@ permissions:
 
 jobs:
   release:
-    uses: forgesworn/anvil/.github/workflows/release.yml@v0
+    # Pinned to a commit SHA, not the mutable `v0` tag (M6 audit finding): this job holds
+    # `contents: write` + `id-token: write` (npm provenance/OIDC), so whoever can move `v0` in
+    # `forgesworn/anvil` would control what gets published with provenance under THIS repo's
+    # identity. Resolved via `git ls-remote --tags https://github.com/forgesworn/anvil.git`; bump
+    # by dependabot (github-actions ecosystem already tracks reusable-workflow `uses:` pins here).
+    uses: forgesworn/anvil/.github/workflows/release.yml@d4294e622932d93957d73e5b1af0267382b6af04 # v0
     with:
       vector-test-command: npm run vectors:check

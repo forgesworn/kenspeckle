@@ -9,7 +9,7 @@
 // The protocol subpaths — `./handshake`, `./bond`, `./ken`, `./discovery`, `./invite`, and
 // `./companion-rail` — are
 // DELIBERATELY NOT re-exported here. Each is imported via its own subpath
-// (`import { deriveBondSecret } from 'kenspeckle/bond'`) so a consumer that only needs, say, the bond
+// (`import { deriveBondSecret } from '@forgesworn/kenspeckle/bond'`) so a consumer that only needs, say, the bond
 // ceremony does not pull the discovery/tessera-kit graph. Keeping them off the `.` barrel is the
 // load-bearing tree-shaking + dependency-isolation boundary, not an oversight.
 
@@ -26,6 +26,8 @@ export {
   unlink,
   toWire,
   serializeEntry,
+  toSyncForm,
+  serializeEntryForSync,
   parseEntry,
 } from './model.js'
 

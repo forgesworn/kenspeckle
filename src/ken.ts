@@ -19,7 +19,7 @@
 //   4. ROTATE / REVOKE safely — `resolveKen` (propose-not-flip), `acceptKenRotation` (explicit move),
 //      `revokeKen` (fail-closed), `dropKen` (consumer deletes the record).
 //
-// This is a STANDALONE subpath entry (`import { ... } from 'kenspeckle/ken'`); it is deliberately NOT
+// This is a STANDALONE subpath entry (`import { ... } from '@forgesworn/kenspeckle/ken'`); it is deliberately NOT
 // re-exported from the `.` barrel.
 //
 // ── NIP-05 HONESTY (security model — also stated in SECURITY.md) ──────────────────────────────────
@@ -40,6 +40,7 @@ import { bytesToHex, randomBytes } from '@noble/hashes/utils.js'
 import { verifyEvent } from 'nostr-tools/pure'
 import { COMPANION_LOCATOR_PREFIX } from './types.js'
 import type { NostrEvent, KenEntry, KenProvenance } from './types.js'
+import { validateNip05, validateProvenance, capLocator, MAX_CORROBORATIONS } from './validate.js'
 
 /** Exactly 64 hex chars (case-insensitive; callers lowercase on the way out). */
 const HEX64 = /^[0-9a-f]{64}$/i
@@ -50,11 +51,6 @@ const HEX64 = /^[0-9a-f]{64}$/i
  *  event. Deliberately case-SENSITIVE (no `i` flag): nothing we issue is uppercase, so accepting
  *  uppercase would only widen the surface for no benefit. */
 const CHALLENGE_NONCE = /^[0-9a-f]{64}$/
-
-/** Basic NIP-05 `local@domain` shape. Deliberately permissive on the allowed characters (NIP-05
- *  itself only constrains the local part to `[a-z0-9-_.]` case-insensitively); the load-bearing
- *  guard is that BOTH sides are non-empty and there is exactly one `@`. */
-const NIP05 = /^[a-z0-9\-_.]+@[a-z0-9\-_.]+$/i
 
 /** Current unix time in whole seconds (the kenspeckle timestamp convention). */
 function nowSec(): number {
@@ -70,6 +66,23 @@ function normHex64(value: string, field: string): string {
 }
 
 /**
+ * Validate a provenance for a FIRST-PARTY creation path (`pinKen` / `addCorroboration`) and reject
+ * the RESERVED `companion:` locator prefix (M5 audit finding). `COMPANION_LOCATOR_PREFIX` is
+ * reserved for `landReturnedKen` (./companion-rail) to mark a RELAYED claim, not a first-hand
+ * confirmation; a first-party call minting one would let a companion-app claim masquerade as
+ * something the user directly confirmed — the opposite of what the reservation means to guarantee.
+ */
+function validateFirstPartyProvenance(v: KenProvenance): KenProvenance {
+  const validated = capLocator(validateProvenance(v))
+  if (validated.locator.startsWith(COMPANION_LOCATOR_PREFIX)) {
+    throw new Error(
+      `ken: provenance.locator must not use the reserved "${COMPANION_LOCATOR_PREFIX}" prefix`,
+    )
+  }
+  return validated
+}
+
+/**
  * Pin a public key as a `ken` (one-way recognition) entry.
  *
  * Validates `pubkeyHex` and `ownerPubkeyHex` (each 64-hex; lowercase-normalized). `ownerPubkeyHex`
@@ -77,8 +90,15 @@ function normHex64(value: string, field: string): string {
  * whole model (a ken is recorded under a specific persona of mine, never globally). There is NO
  * shared secret — recognition is one-directional.
  *
+ * Runs the SAME `validateProvenance` + `MAX_CORROBORATIONS` cap + reserved-`companion:`-prefix
+ * rejection as `importEntries`/`parseEntry` (M4/M5 audit findings) — a builder must not be able to
+ * mint an entry the parser would then refuse (which, for a corroboration cap violation, meant a
+ * roster that exported fine could not be restored, losing the whole backup).
+ *
  * @returns A fresh `KenEntry` with `tier:'ken'`, integer `addedAt`, the supplied provenance, and the
  *          optional `displayName` / `nip05` when present.
+ * @throws on a malformed provenance/corroboration, a `companion:`-prefixed locator, more than
+ *         `MAX_CORROBORATIONS` corroborations, or a malformed `nip05`.
  */
 export function pinKen(p: {
   pubkeyHex: string
@@ -92,21 +112,25 @@ export function pinKen(p: {
 }): KenEntry {
   const pubkey = normHex64(p.pubkeyHex, 'pubkeyHex')
   const ownerPubkey = normHex64(p.ownerPubkeyHex, 'ownerPubkeyHex')
+  const provenance = validateFirstPartyProvenance(p.provenance)
 
   const entry: KenEntry = {
     tier: 'ken',
     pubkey,
     ownerPubkey,
     addedAt: nowSec(),
-    provenance: p.provenance,
+    provenance,
   }
   if (p.displayName !== undefined) entry.displayName = p.displayName
   // Only materialise `corroborations` when there is something to record: a caller passing `[]` must
   // not make the new entry serialise differently from one pinned without the argument at all.
   if (p.corroborations !== undefined && p.corroborations.length > 0) {
-    entry.corroborations = [...p.corroborations]
+    if (p.corroborations.length > MAX_CORROBORATIONS) {
+      throw new Error(`ken: at most ${MAX_CORROBORATIONS} corroborations`)
+    }
+    entry.corroborations = p.corroborations.map(validateFirstPartyProvenance)
   }
-  if (p.nip05 !== undefined) entry.nip05 = p.nip05
+  if (p.nip05 !== undefined) entry.nip05 = validateNip05(p.nip05, 'nip05')
   return entry
 }
 
@@ -121,9 +145,20 @@ export function pinKen(p: {
  *
  * Duplicates are NOT de-duplicated: re-checking the same domain a year later is a genuinely new
  * confirmation with a new `confirmedAt`, and collapsing it would destroy the recency evidence.
+ *
+ * Runs the SAME `validateProvenance` + `MAX_CORROBORATIONS` cap + reserved-`companion:`-prefix
+ * rejection as `pinKen`/`importEntries`/`parseEntry` (M4/M5 audit findings).
+ *
+ * @throws on a malformed provenance, a `companion:`-prefixed locator, or if the result would exceed
+ *         `MAX_CORROBORATIONS`.
  */
 export function addCorroboration(entry: KenEntry, provenance: KenProvenance): KenEntry {
-  return { ...entry, corroborations: [...(entry.corroborations ?? []), provenance] }
+  const validated = validateFirstPartyProvenance(provenance)
+  const corroborations = [...(entry.corroborations ?? []), validated]
+  if (corroborations.length > MAX_CORROBORATIONS) {
+    throw new Error(`ken: at most ${MAX_CORROBORATIONS} corroborations`)
+  }
+  return { ...entry, corroborations }
 }
 
 /**
@@ -201,6 +236,14 @@ export function summarizeKenProvenance(entry: KenEntry): {
   }
 }
 
+/** Bounded wait for the nip05 fetch (L1 audit finding) — a stalled/malicious server must not be
+ *  able to hang the caller forever. */
+const NIP05_FETCH_TIMEOUT_MS = 10_000
+/** Cap on the nip05 response body, checked BEFORE it is handed to `JSON.parse` (L1 audit finding):
+ *  a well-known `nostr.json` is a small, bounded document, so an unbounded body is itself a signal
+ *  something is wrong, and parsing it would be an unbounded-allocation surface either way. */
+const NIP05_MAX_BODY_CHARS = 1_048_576 // 1 MiB of JSON text
+
 /**
  * Resolve a NIP-05 identifier to a single key over HTTPS, with full untrusted-input hardening.
  *
@@ -210,26 +253,59 @@ export function summarizeKenProvenance(entry: KenEntry): {
  * parsed with a runtime type guard: the body must be an object, `body.names` must be an object, and
  * `body.names[local]` must be a 64-hex string. Anything else THROWS (we refuse to guess).
  *
- * @param nip05 - `local@domain` (validated by the caller before this runs).
+ * THIS IS THE CHOKE POINT (M1 audit finding): `nip05` can reach here from an untrusted/imported
+ * entry (`resolveKen` operates on whatever `entry.nip05` was set to, including one that arrived via
+ * sync or a restored backup), not only from a caller that already validated it. `validateNip05` is
+ * re-run here regardless of whether the caller already checked, so the URL is built ONLY from a
+ * strictly-shaped `local`/`domain` — no port, no userinfo, no path/query/fragment, no IP literal.
+ *
+ * FETCH HARDENING (L1 audit finding): NIP-05 requires fetchers to ignore redirects — the "HTTPS
+ * only" guarantee would otherwise depend on wherever a redirect target points, which the domain
+ * operator also controls — so `redirect:'error'` makes a redirect a hard failure instead of a
+ * silent follow. A bounded `AbortSignal.timeout` prevents a stalled response from hanging the
+ * caller. The body is read as text and length-capped BEFORE `JSON.parse`, not handed straight to
+ * `res.json()`, so an oversized body is rejected before an unbounded parse/allocation.
+ *
+ * CASE-FOLDING (L2 audit finding): NIP-05 names are case-insensitive, but servers commonly publish
+ * lowercase keys in `names`. Both the query param and the `names` lookup key are lowercased so
+ * `Bob@Example.com` matches a server publishing `bob`.
+ *
+ * @param nip05 - `local@domain`. Re-validated here even though callers also validate.
  * @param fetch - injected `fetch` (the global, or a test double) — keeps this unit pure/testable.
  * @returns the resolved pubkey, lowercase-normalized.
- * @throws if the HTTP response is not ok, the JSON is malformed, or the name is absent / not 64-hex.
+ * @throws if `nip05` is malformed, the HTTP response is not ok / redirected, the body exceeds the
+ *         size cap, the JSON is malformed, or the name is absent / not 64-hex.
  */
 async function resolveNip05(nip05: string, fetch: typeof globalThis.fetch): Promise<string> {
+  validateNip05(nip05, 'nip05')
   const atIndex = nip05.indexOf('@')
-  const local = nip05.slice(0, atIndex)
-  const domain = nip05.slice(atIndex + 1)
+  // Lowercase BOTH halves — NIP-05 is case-insensitive end to end (L2).
+  const local = nip05.slice(0, atIndex).toLowerCase()
+  const domain = nip05.slice(atIndex + 1).toLowerCase()
 
   // HTTPS only. The URL is constructed from validated parts, so there is no scheme-injection surface.
   const url = `https://${domain}/.well-known/nostr.json?name=${encodeURIComponent(local)}`
 
-  const res = await fetch(url)
+  const res = await fetch(url, {
+    redirect: 'error',
+    signal: AbortSignal.timeout(NIP05_FETCH_TIMEOUT_MS),
+  })
   if (!res.ok) {
     throw new Error(`ken: nip05 lookup failed (HTTP ${res.status})`)
   }
 
-  // Untrusted body — JSON.parse-equivalent surface. Guard every step before trusting it.
-  const body: unknown = await res.json()
+  // Read as text and cap BEFORE parsing — an oversized body is rejected before `JSON.parse` ever
+  // sees it (L1).
+  const text = await res.text()
+  if (text.length > NIP05_MAX_BODY_CHARS) {
+    throw new Error('ken: nip05 response exceeds the size cap')
+  }
+  let body: unknown
+  try {
+    body = JSON.parse(text)
+  } catch {
+    throw new Error('ken: nip05 response is not valid JSON')
+  }
   if (body === null || typeof body !== 'object') {
     throw new Error('ken: nip05 response is not an object')
   }
@@ -260,9 +336,7 @@ export async function pinKenFromNip05(
   ownerPubkeyHex: string,
   fetch: typeof globalThis.fetch,
 ): Promise<KenEntry> {
-  if (typeof nip05 !== 'string' || !NIP05.test(nip05)) {
-    throw new Error('ken: nip05 must be of the form local@domain')
-  }
+  validateNip05(nip05, 'nip05')
   const resolved = await resolveNip05(nip05, fetch)
   return pinKen({
     pubkeyHex: resolved,
@@ -296,6 +370,24 @@ export function buildKeyControlChallenge(): { nonce: string; createdAt: number }
  * old signature can never satisfy this — that is what makes recognition impersonation-resistant
  * *live*, in contrast to `attributeSignature`, which is replayable by design.
  *
+ * **Known limitation (L4 audit finding) — NOT verifier-bound.** Nothing here ties the proof to a
+ * SPECIFIC verifier or context: any party holding a valid `{nonce, signedEvent}` pair can present it
+ * to prove control to a DIFFERENT verifier (a phishing verifier B can relay a challenge from real
+ * verifier A to the key holder and replay the resulting proof back to A). Closing this fully needs a
+ * dedicated event kind carrying verifier/origin/expiry tags — a wire-format change that belongs in
+ * PROTOCOL.md (out of this file's scope). As a backward-compatible, OPT-IN partial mitigation,
+ * `opts.expectedCreatedAt` + `opts.maxAgeSec` bound `signedEvent.created_at` against the challenge's
+ * own `createdAt` (rejecting a proof presented long after the challenge was issued), and
+ * `opts.verifierTag` requires a `['verifier', <id>]` tag on the signed event. Both are no-ops when
+ * omitted (existing callers are unaffected). Passing them does not by itself defeat a REAL-TIME
+ * relay attack (a phishing verifier can still forward tags it was told to include) — only a
+ * dedicated, verifier-signed challenge kind closes that fully.
+ *
+ * **Single-use is the CONSUMER'S responsibility.** This function does not — and cannot, being pure
+ * and stateless — track which nonces have already been consumed. A verifier MUST record each
+ * `nonce` it accepts (e.g. against `entry.pubkey`) and reject a repeat, or a proof captured once can
+ * be replayed against the SAME verifier within the freshness window.
+ *
  * Checks, in this exact order (each short-circuits, fail-closed):
  *   1. `revoked`                  → `{ ok:false, reason:'revoked' }` (a dead pin proves nothing).
  *   2. nonce STRENGTH             → else `'bad-nonce'`. The challenge nonce MUST be exactly 64
@@ -309,7 +401,9 @@ export function buildKeyControlChallenge(): { nonce: string; createdAt: number }
  *                                   accepted — live control must be of the key in force NOW).
  *   4. `content === nonce`        → else `'nonce-mismatch'` (binds the proof to THIS challenge).
  *   5. `verifyEvent` (sig + id)   → else `'bad-signature'`.
- *   6. otherwise                  → `{ ok:true }`.
+ *   6. `opts.expectedCreatedAt`   → else `'stale-proof'` (only when supplied; see above).
+ *   7. `opts.verifierTag`         → else `'verifier-mismatch'` (only when supplied; see above).
+ *   8. otherwise                  → `{ ok:true }`.
  *
  * @returns `{ ok, reason? }` — `ok:true` only when LIVE control is proven; `reason` names the failure.
  */
@@ -317,6 +411,7 @@ export function verifyKeyControl(
   entry: KenEntry,
   nonce: string,
   signedEvent: NostrEvent,
+  opts?: { expectedCreatedAt?: number; maxAgeSec?: number; verifierTag?: string },
 ): { ok: boolean; reason?: string } {
   if (entry.revoked) return { ok: false, reason: 'revoked' }
   // Nonce-strength gate (fail-closed, checked EARLY): a challenge that is not the full 64-hex random
@@ -328,6 +423,15 @@ export function verifyKeyControl(
   if (signedEvent.pubkey !== entry.pubkey) return { ok: false, reason: 'pubkey-not-current-pin' }
   if (signedEvent.content !== nonce) return { ok: false, reason: 'nonce-mismatch' }
   if (!verifyEvent(signedEvent)) return { ok: false, reason: 'bad-signature' }
+  if (opts?.expectedCreatedAt !== undefined) {
+    const maxAge = opts.maxAgeSec ?? 300
+    const age = signedEvent.created_at - opts.expectedCreatedAt
+    if (age < 0 || age > maxAge) return { ok: false, reason: 'stale-proof' }
+  }
+  if (opts?.verifierTag !== undefined) {
+    const has = signedEvent.tags.some((t) => t[0] === 'verifier' && t[1] === opts.verifierTag)
+    if (!has) return { ok: false, reason: 'verifier-mismatch' }
+  }
   return { ok: true }
 }
 
@@ -366,13 +470,21 @@ export function attributeSignature(
 /**
  * Re-resolve the entry's NIP-05 and PROPOSE (never auto-flip) a rotation if the key changed.
  *
- * If the entry has no `nip05`, returns it UNCHANGED (same reference — no network call). Otherwise
+ * If the entry has no `nip05`, returns it UNCHANGED (same reference — no network call). If the entry
+ * is `revoked`, ALSO returns it UNCHANGED (same reference — no network call): a revoked pin is dead
+ * (`attributeSignature`/`verifyKeyControl` both fail closed on it regardless), so proposing a
+ * rotation for it is nonsensical and would only invite an `acceptKenRotation` that resurrects a
+ * revoked pin under a new key without an explicit un-revoke decision (L3 audit finding). Otherwise
  * resolves over HTTPS and:
- *   • resolved === current pin  → `{ ...entry, lastResolvedAt: now }` (records the successful check;
- *     any pre-existing unaccepted `rotation` is LEFT as-is — we don't silently retract a proposal the
- *     user hasn't acted on; clearing it is the consumer's explicit choice).
- *   • resolved !== current pin  → `{ ...entry, lastResolvedAt: now, rotation: { newPubkey: resolved,
- *     observedAt: now, via:'nip05', accepted:false } }`. **`pubkey` is NOT touched.** A NIP-05 key
+ *   • resolved === current pin        → `{ ...entry, lastResolvedAt: now }` (records the successful
+ *     check; any pre-existing unaccepted `rotation` is LEFT as-is — we don't silently retract a
+ *     proposal the user hasn't acted on; clearing it is the consumer's explicit choice).
+ *   • resolved ∈ `previousPubkeys`    → PROPOSED with `rotation.rollback: true` (H3 audit finding).
+ *     This is the exact shape of a compromised-domain replay: the NIP-05 operator re-serves a key
+ *     that was already rotated away from. Flagging it (instead of proposing an ordinary rotation)
+ *     lets `acceptKenRotation` refuse it by default.
+ *   • resolved !== current pin, not previously rotated away → PROPOSED as an ordinary rotation
+ *     (`rotation.rollback` absent). `pubkey` is NOT touched in either proposal case. A NIP-05 key
  *     change is an UNTRUSTED signal (see the NIP-05 HONESTY note); accepting it is an explicit act
  *     via `acceptKenRotation`.
  *
@@ -384,15 +496,23 @@ export async function resolveKen(
   fetch: typeof globalThis.fetch,
 ): Promise<KenEntry> {
   if (entry.nip05 === undefined) return entry
+  if (entry.revoked) return entry
   const resolved = await resolveNip05(entry.nip05, fetch)
   const at = nowSec()
   if (resolved === entry.pubkey) {
     return { ...entry, lastResolvedAt: at }
   }
+  const rollback = entry.previousPubkeys?.includes(resolved) ?? false
   return {
     ...entry,
     lastResolvedAt: at,
-    rotation: { newPubkey: resolved, observedAt: at, via: 'nip05', accepted: false },
+    rotation: {
+      newPubkey: resolved,
+      observedAt: at,
+      via: 'nip05',
+      accepted: false,
+      ...(rollback ? { rollback: true } : {}),
+    },
   }
 }
 
@@ -400,22 +520,58 @@ export async function resolveKen(
  * Accept a pending rotation: move the current pin into history and adopt the proposed key.
  *
  * Requires `entry.rotation` to be present (throws otherwise — there is nothing to accept). The
- * current `pubkey` is APPENDED to `previousPubkeys` (preserving multi-rotation audit order), `pubkey`
- * is set to `rotation.newPubkey`, and `rotation.accepted` is set to `true`. There is NO dual-accept /
- * grace window: the moment this runs, `attributeSignature` rejects the old key (now in
+ * current `pubkey` is APPENDED to `previousPubkeys` (preserving multi-rotation audit order; any
+ * PRIOR occurrence of the new pubkey there is filtered out first — see the rollback note below),
+ * `pubkey` is set to `rotation.newPubkey`, and `rotation.accepted` is set to `true`. There is NO
+ * dual-accept / grace window: the moment this runs, `attributeSignature` rejects the old key (now in
  * `previousPubkeys`) as `'rotated-away-key'`, and `verifyKeyControl` will only prove the new pin.
  *
  * This is intentionally a separate, explicit step from `resolveKen` (which only proposes): adopting a
  * new key for a recognised public figure is a security-relevant decision the user must confirm.
+ *
+ * FAIL-CLOSED GUARDS (H2/H3 audit findings):
+ *   • `rotation.accepted === true`         → throws. Without this, calling accept a SECOND time on
+ *     an entry whose accepted rotation `resolveKen` deliberately left in place (see its doc comment)
+ *     would append the now-CURRENT pubkey into `previousPubkeys` again, and `attributeSignature`
+ *     would then reject the legitimate current key as `'rotated-away-key'`. This makes the function
+ *     idempotency-safe: the current pubkey can never be added to `previousPubkeys` twice.
+ *   • `rotation.newPubkey === entry.pubkey` → throws (a degenerate self-rotation).
+ *   • `rotation.rollback === true`          → throws UNLESS `opts.allowRevert` is `true`. A rollback
+ *     proposal targets a key already in `previousPubkeys` — the compromised-domain-replay shape — so
+ *     accepting it requires an explicit, informed override rather than the ordinary accept path.
+ *   • `rotation.newPubkey` is re-validated as 64-hex here (defense-in-depth for a hand-built entry
+ *     that bypassed `validateEntryShape`).
+ *
+ * @throws per the guards above, or `ken: rotation.newPubkey must be 64 hex chars` for a malformed
+ *         `newPubkey`.
  */
-export function acceptKenRotation(entry: KenEntry): KenEntry {
+export function acceptKenRotation(entry: KenEntry, opts?: { allowRevert?: boolean }): KenEntry {
   if (!entry.rotation) {
     throw new Error('ken: no pending rotation to accept')
   }
-  const previousPubkeys = [...(entry.previousPubkeys ?? []), entry.pubkey]
+  if (entry.rotation.accepted) {
+    throw new Error('ken: rotation has already been accepted')
+  }
+  if (entry.rotation.rollback && !opts?.allowRevert) {
+    throw new Error(
+      'ken: rotation targets a key already in previousPubkeys (rollback) — pass { allowRevert: true } to confirm',
+    )
+  }
+  const newPubkey = normHex64(entry.rotation.newPubkey, 'rotation.newPubkey')
+  if (newPubkey === entry.pubkey) {
+    throw new Error('ken: rotation.newPubkey equals the current pin')
+  }
+  // Filter out `newPubkey` before appending the current pin: for a rollback accept, `newPubkey` is
+  // ALREADY in `previousPubkeys`, and leaving it there while also setting it as the current `pubkey`
+  // would make `attributeSignature` reject the legitimate current key (it checks `previousPubkeys`
+  // before the current-pin match) — the exact self-contradiction this fix closes.
+  const previousPubkeys = [
+    ...(entry.previousPubkeys ?? []).filter((p) => p !== newPubkey),
+    entry.pubkey,
+  ]
   return {
     ...entry,
-    pubkey: entry.rotation.newPubkey,
+    pubkey: newPubkey,
     previousPubkeys,
     rotation: { ...entry.rotation, accepted: true },
   }

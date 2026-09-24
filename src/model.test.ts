@@ -7,6 +7,8 @@ import {
   unlink,
   toWire,
   serializeEntry,
+  toSyncForm,
+  serializeEntryForSync,
   parseEntry,
 } from './model.js'
 import type { KindredEntry, KinEntry, KithEntry, KenEntry } from './types.js'
@@ -182,38 +184,76 @@ describe('linkForRecall / unlink', () => {
   })
 })
 
-describe('toWire / serializeEntry — THE PRIVACY INVARIANT', () => {
+describe('toWire / serializeEntry — THE PRIVACY INVARIANT (annotations AND sharedSecret, H4 audit finding)', () => {
   const withAnnotations: KithEntry = {
     ...kith,
     annotations: { groupId: 'g1', label: 'work', note: 'met at conf', blocked: true },
   }
 
-  it('toWire strips annotations', () => {
+  it('toWire strips annotations AND sharedSecret', () => {
     const wire = toWire(withAnnotations)
     expect('annotations' in wire).toBe(false)
-    // non-annotation fields preserved
+    expect('sharedSecret' in wire).toBe(false)
+    // non-secret, non-annotation fields preserved
     expect(wire.pubkey).toBe(B)
     expect(wire.tier).toBe('kith')
   })
 
-  it('serializeEntry NEVER includes an annotations key even when input has them', () => {
+  it('toWire is a no-op difference from toSyncForm on a ken (no sharedSecret to begin with)', () => {
+    const wire = toWire(ken)
+    expect(wire).toEqual(toSyncForm(ken))
+  })
+
+  it('serializeEntry NEVER includes an annotations OR a sharedSecret key even when input has them', () => {
     const s = serializeEntry(withAnnotations)
     expect(s).not.toContain('annotations')
     expect(s).not.toContain('"work"')
     expect(s).not.toContain('met at conf')
+    expect(s).not.toContain('sharedSecret')
+    expect(s).not.toContain('11'.repeat(32))
     const parsed = JSON.parse(s)
     expect(parsed.annotations).toBeUndefined()
+    expect(parsed.sharedSecret).toBeUndefined()
     expect('annotations' in parsed).toBe(false)
+    expect('sharedSecret' in parsed).toBe(false)
   })
 
-  it('serializeEntry round-trips the non-annotation fields', () => {
+  it('serializeEntry round-trips the non-secret, non-annotation fields', () => {
     const s = serializeEntry(withAnnotations)
     const parsed = JSON.parse(s)
     expect(parsed.pubkey).toBe(B)
     expect(parsed.ownerPubkey).toBe(OWNER)
     expect(parsed.tier).toBe('kith')
-    expect(parsed.sharedSecret).toBe('11'.repeat(32))
     expect(parsed.verifiedAt).toBe(2)
+  })
+
+  it('a kin/kith wire form cannot be round-tripped by parseEntry — sharedSecret is required and absent by design', () => {
+    const s = serializeEntry(withAnnotations)
+    expect(() => parseEntry(s)).toThrow(/sharedSecret/)
+  })
+})
+
+describe('toSyncForm / serializeEntryForSync — KEEPS sharedSecret for cross-device sync (H4 audit finding)', () => {
+  const withAnnotations: KithEntry = {
+    ...kith,
+    annotations: { groupId: 'g1', label: 'work', note: 'met at conf', blocked: true },
+  }
+
+  it('toSyncForm strips annotations but PRESERVES sharedSecret', () => {
+    const sync = toSyncForm(withAnnotations)
+    expect('annotations' in sync).toBe(false)
+    expect(sync.sharedSecret).toBe('11'.repeat(32))
+  })
+
+  it('serializeEntryForSync round-trips through parseEntry, including sharedSecret', () => {
+    const s = serializeEntryForSync(withAnnotations)
+    expect(s).not.toContain('annotations')
+    const parsed = parseEntry(s)
+    expect(parsed.tier).toBe('kith')
+    if (parsed.tier === 'kith') {
+      expect(parsed.sharedSecret).toBe('11'.repeat(32))
+      expect(parsed.verifiedAt).toBe(2)
+    }
   })
 })
 
@@ -263,8 +303,8 @@ describe('serializeEntry determinism', () => {
 })
 
 describe('parseEntry', () => {
-  it('round-trips a serialized kin entry', () => {
-    const parsed = parseEntry(serializeEntry(kin))
+  it('round-trips a serialized kin entry VIA serializeEntryForSync (true wire form omits sharedSecret — see the H4 describe block above)', () => {
+    const parsed = parseEntry(serializeEntryForSync(kin))
     expect(parsed.tier).toBe('kin')
     expect(parsed.pubkey).toBe(A)
     if (parsed.tier === 'kin') {
@@ -273,8 +313,8 @@ describe('parseEntry', () => {
     }
   })
 
-  it('round-trips a serialized kith entry', () => {
-    const parsed = parseEntry(serializeEntry(kith))
+  it('round-trips a serialized kith entry VIA serializeEntryForSync', () => {
+    const parsed = parseEntry(serializeEntryForSync(kith))
     expect(parsed.tier).toBe('kith')
     if (parsed.tier === 'kith') {
       expect(parsed.sharedSecret).toBe('11'.repeat(32))
@@ -282,7 +322,7 @@ describe('parseEntry', () => {
     }
   })
 
-  it('round-trips a serialized ken entry', () => {
+  it('round-trips a serialized ken entry (no sharedSecret involved — serializeEntry and serializeEntryForSync agree)', () => {
     const parsed = parseEntry(serializeEntry(ken))
     expect(parsed.tier).toBe('ken')
     if (parsed.tier === 'ken') {
@@ -291,9 +331,9 @@ describe('parseEntry', () => {
     }
   })
 
-  it('does NOT restore annotations (wire never had them)', () => {
+  it('does NOT restore annotations (neither serialised form carries them)', () => {
     const withAnnotations: KithEntry = { ...kith, annotations: { label: 'secret' } }
-    const parsed = parseEntry(serializeEntry(withAnnotations))
+    const parsed = parseEntry(serializeEntryForSync(withAnnotations))
     expect(parsed.annotations).toBeUndefined()
   })
 
@@ -313,18 +353,20 @@ describe('parseEntry', () => {
   })
 
   it('rejects a missing sharedSecret on a kith (mutual)', () => {
-    const { sharedSecret: _drop, ...rest } = toWire(kith) as KithEntry
-    expect(() => parseEntry(JSON.stringify(rest))).toThrow()
+    // Base on `toSyncForm` (which KEEPS sharedSecret), then explicitly drop just that one field —
+    // isolates this check from H4's unrelated "wire form omits sharedSecret by design" behaviour.
+    const { sharedSecret: _drop, ...rest } = toSyncForm(kith) as KithEntry
+    expect(() => parseEntry(JSON.stringify(rest))).toThrow(/sharedSecret/)
   })
 
   it('rejects a missing verifiedAt on a kin', () => {
-    const { verifiedAt: _drop, ...rest } = toWire(kin) as KinEntry
-    expect(() => parseEntry(JSON.stringify(rest))).toThrow()
+    const { verifiedAt: _drop, ...rest } = toSyncForm(kin) as KinEntry
+    expect(() => parseEntry(JSON.stringify(rest))).toThrow(/verifiedAt/)
   })
 
   it('rejects a kin with an invalid relationship', () => {
-    const bad = JSON.stringify({ ...toWire(kin), relationship: 'frenemy' })
-    expect(() => parseEntry(bad)).toThrow()
+    const bad = JSON.stringify({ ...toSyncForm(kin), relationship: 'frenemy' })
+    expect(() => parseEntry(bad)).toThrow(/relationship/)
   })
 
   it('rejects a missing provenance on a ken', () => {
@@ -520,11 +562,12 @@ describe('ken corroborations — the NON-BREAKING guarantee', () => {
 
   it('does not reconstruct corroborations onto a non-ken tier', () => {
     // `corroborations` is a KEN field. `parseEntry` reconstructs from a whitelist, so a kith entry
-    // carrying one comes back without it. (Note this is a statement about the PARSER: `toWire` is a
-    // shallow copy, so a hand-built object with a stray key would still emit it — same pre-existing
-    // behaviour as any other unknown key.)
+    // carrying one comes back without it. (Note this is a statement about the PARSER: `toWire`/
+    // `toSyncForm` are shallow copies, so a hand-built object with a stray key would still emit it —
+    // same pre-existing behaviour as any other unknown key.) Based on `toSyncForm` (keeps
+    // sharedSecret, required for a kith) since this test is about corroborations, not H4.
     const smuggled = JSON.stringify({
-      ...toWire(kith),
+      ...toSyncForm(kith),
       corroborations: [{ source: 'dns', locator: 'x', confirmedAt: 1 }],
     })
     const parsed = parseEntry(smuggled)

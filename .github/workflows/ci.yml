@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main, dev]
 
+# Least-privilege default (L10 audit finding): this workflow only reads the repo (checkout) and
+# runs tests — it never needs to write anything. Overridden per-job below only where a job
+# genuinely needs more (none currently do).
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -20,7 +26,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
@@ -41,6 +47,18 @@ jobs:
           git config --global --add url."$AUTH".insteadOf "ssh://git@github.com/"
           git config --global --add url."$AUTH".insteadOf "git@github.com:"
       - run: npm ci
+      # Scope the PAT to the install step (L10 audit finding): the git-credential rewrite above
+      # stays live in the global git config through every later step (build, vectors:check, test)
+      # otherwise, for no reason — nothing after `npm ci` touches git. Remove it as soon as the
+      # install that needed it is done; `if: always()` so it still runs (and the PAT is scrubbed)
+      # even if `npm ci` itself failed.
+      - name: Revoke git PAT auth (install step only)
+        if: always()
+        env:
+          FORGESWORN_READ_PAT: ${{ secrets.FORGESWORN_READ_PAT }}
+        run: |
+          AUTH="https://x-access-token:${FORGESWORN_READ_PAT}@github.com/"
+          git config --global --unset-all url."$AUTH".insteadOf || true
       - run: npm run typecheck
       - run: npm run build
       - run: npm run vectors:check

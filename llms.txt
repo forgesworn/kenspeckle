@@ -22,14 +22,17 @@ Signet ecosystem, consumed by signet-app.
 npm i @forgesworn/kenspeckle
 ```
 
-`@forgesworn/tessera-kit` is a sibling NOT YET ON NPM. For local dev, pack + install the tarball
-(`cd ../tessera-kit && npm pack && cd ../kenspeckle && npm i ../tessera-kit/forgesworn-tessera-kit-0.1.0.tgz`).
-To PUBLISH kenspeckle, publish @forgesworn/tessera-kit first — do NOT ship a `file:` dep.
+`@forgesworn/tessera-kit` is a sibling NOT YET ON NPM. `package.json` resolves it as a PINNED git
+dependency (`git+https://github.com/forgesworn/tessera-kit.git#<commit>`) — `npm ci`/`npm install`
+clone it directly; nothing to pack/symlink locally. An external installer needs read access to that
+repo (or @forgesworn/tessera-kit published to npm) for `npm i @forgesworn/kenspeckle` to succeed.
+`scripts/check-publishable-deps.mjs` runs in `prepublishOnly` and REFUSES to publish while any
+dependency/peerDependency is a git/file/http(s) spec, so this cannot ship to npm unresolved.
 
 ```typescript
 import { deriveBondSecret, bondWords, verifyBondWord } from '@forgesworn/kenspeckle/bond'
 import { pinKenFromNip05, buildKeyControlChallenge, verifyKeyControl } from '@forgesworn/kenspeckle/ken'
-import { discoverPresent, parseFilterPublication } from '@forgesworn/kenspeckle/discovery'
+import { discoverPresent, parseFilter, parseFilterPublication } from '@forgesworn/kenspeckle/discovery'
 
 // kith: derive the byte-exact shared secret, read directional words for a counter.
 const secret = deriveBondSecret(myPrivHex, theirPubHex)
@@ -90,33 +93,55 @@ const present = discoverPresent(parseFilter(pub.blob), myEntries, myPersonaPubHe
 
 ## API Surface
 
-- `.` — model types + `EventTemplate`/`NostrEvent`/`NostrFilter` aliases +
-  `hasSharedSecret`; local ops `scopeToPersona`, `assertOwnedPersona`,
-  `searchEntries`, `linkForRecall`/`unlink`, `toWire`/`serializeEntry`/`parseEntry`,
-  `exportEntriesEncrypted`/`importEntries`.
+- `.` — model types (incl. `WireEntry`/`SyncEntry`/`DistributiveOmit`) +
+  `EventTemplate`/`NostrEvent`/`NostrFilter` aliases + `hasSharedSecret`; local ops
+  `scopeToPersona`, `assertOwnedPersona`, `searchEntries`, `linkForRecall`/`unlink`;
+  `toWire`/`serializeEntry` (TRUE wire-safe — strips `annotations` AND
+  `sharedSecret`) / `toSyncForm`/`serializeEntryForSync` (keeps `sharedSecret`, for
+  cross-device sync only) / `parseEntry`; `exportEntriesEncrypted`/`importEntries`
+  (backup blobs carry a `KSBK` version header; older pre-header backups still
+  read); `toGrantView`/`buildGrantEnvelope`/`parseGrantEnvelope`.
 - `./handshake` — `buildHandshakePayload` / `parseHandshakePayload`; `HandshakePayload`.
 - `./bond` — `deriveBondSecret`, `bondWords`, `verifyBondWord`, `buildBondAttestation`,
-  `retractBondAssertion`, `KINDRED_BOND_NAMESPACE`.
+  `buildBondRevocation` (PRIMARY way to retract — kind-5 with `e`/`a`/`k` tags),
+  `retractBondAssertion` (now also takes `{ attesterPubHex, subjectPubHex }` and
+  emits the same tags), `KINDRED_BOND_NAMESPACE`.
 - `./ken` — `pinKen`, `pinKenFromNip05`, `buildKeyControlChallenge`,
-  `verifyKeyControl`, `attributeSignature`, `resolveKen`, `acceptKenRotation`,
-  `revokeKen`, `dropKen`, `addCorroboration`, `summarizeKenProvenance`.
+  `verifyKeyControl` (opt-in `opts` for freshness/verifier-tag binding),
+  `attributeSignature`, `resolveKen` (flags a rollback via `rotation.rollback`),
+  `acceptKenRotation` (throws if already accepted / self-rotation / unconfirmed
+  rollback), `revokeKen`, `dropKen`, `addCorroboration`, `summarizeKenProvenance`.
+  `pinKen`/`addCorroboration` validate provenance, cap corroborations at 64, and
+  reject the reserved `companion:` locator prefix. NIP-05 handling is hardened:
+  strict `local@domain` shape validation, `redirect:'error'`, a bounded timeout, a
+  size-capped body read, and case-folding.
 - `./companion-rail` — `buildPairingUri`/`parsePairingRequest`,
   `buildPairingAck`/`parsePairingAck`, `applyCompanionSnapshot`; return rail
   `WireKen`, `buildReturnEnvelope`/`parseReturnEnvelope`, `landReturnedKen`;
   `ACK_KIND`, `SNAPSHOT_KIND`, `SNAPSHOT_D_TAG`, `RETURN_D_TAG`,
   `RETURN_ADDITIONS_CAP`, `RETURN_CORROBORATIONS_CAP`.
-- `./discovery` — `discoverPresent`, `disclosureFor`, `buildFilterPublication`,
-  `parseFilterPublication`, `aggregatorQuery`, `buildOptOutRequest`, `parseFilter`
-  (re-export); `KINDRED_FILTER_KIND`, `KINDRED_OPTOUT_KIND`.
-- `./invite` — `buildJoinInvite`, `parseJoinInvite`, `verifyBondAttestation`; `JoinInvite`.
+- `./discovery` — `discoverPresent` (also throws if a salt is given to an OPEN
+  filter, or omitted for a KEYED one), `disclosureFor`, `buildFilterPublication`,
+  `parseFilterPublication` (opt `requireAuthorIsSigner`, default true: the event
+  signer must equal the in-blob signer, binding namespace/serverId to what was
+  signed), `aggregatorQuery`, `buildOptOutRequest`, `parseFilter` (re-export);
+  `KINDRED_FILTER_KIND`, `KINDRED_OPTOUT_KIND`.
+- `./invite` — `buildJoinInvite`, `parseJoinInvite`, `verifyBondAttestation(event,
+  now?)` → `{ ok, reason?, ... }`; `JoinInvite`. Invites are v2 only (`v: 2`);
+  digest = `sha256(JSON.stringify(['kenspeckle-invite', 2, namespace, serverId,
+  inviterPubkey, nonce, expiresAt ?? null]))`; `nonce` ≥ 16 bytes hex; `expiresAt`
+  a non-negative safe integer; lone UTF-16 surrogates rejected.
 
 ## Security
 
 ONE-LINE CAVEAT: kenspeckle makes narrow, honest claims — persona-scoping is a consumer
-obligation it assists but cannot guarantee; NIP-05 is TOFU not key-continuity;
-`attributeSignature` is replayable (use `verifyKeyControl`); annotations are never
-serialised; and a forged presence filter is a doxxing primitive, so verify the Nostr
-sig AND the in-blob Schnorr sig against a PINNED server key before trusting any hit.
+obligation it assists but cannot guarantee; NIP-05 is TOFU not key-continuity (a
+rollback to a previously-rotated-away key is flagged and refused without an
+explicit override); `attributeSignature` is replayable (use `verifyKeyControl`);
+annotations AND `sharedSecret` are never on the true wire form (`toWire`/
+`serializeEntry`); and a forged presence filter is a doxxing primitive, so verify
+the Nostr sig AND the in-blob Schnorr sig — and, by default, that the event signer
+equals the in-blob signer — against a PINNED server key before trusting any hit.
 Full posture in SECURITY.md.
 
 ## Optional
