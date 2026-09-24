@@ -103,9 +103,10 @@ const present = discoverPresent(parseFilter(pub.blob), myEntries, myPersonaPubHe
   read); `toGrantView`/`buildGrantEnvelope`/`parseGrantEnvelope`.
 - `./handshake` — `buildHandshakePayload` / `parseHandshakePayload`; `HandshakePayload`.
 - `./bond` — `deriveBondSecret`, `bondWords`, `verifyBondWord`, `buildBondAttestation`,
-  `buildBondRevocation` (PRIMARY way to retract — kind-5 with `e`/`a`/`k` tags),
-  `retractBondAssertion` (now also takes `{ attesterPubHex, subjectPubHex }` and
-  emits the same tags), `KINDRED_BOND_NAMESPACE`.
+  `buildBondRevocation({ subjectPubHex, reason? })` (PRIMARY way to retract — a
+  kind-31000 `status:revoked` event at the attestation's own address),
+  `retractBondAssertion(assertion, { attesterPubHex, subjectPubHex })` (supplement —
+  kind-5 deletion with `e`/`a`/`k` tags), `KINDRED_BOND_NAMESPACE`.
 - `./ken` — `pinKen`, `pinKenFromNip05`, `buildKeyControlChallenge`,
   `verifyKeyControl` (opt-in `opts` for freshness/verifier-tag binding),
   `attributeSignature`, `resolveKen` (flags a rollback via `rotation.rollback`),

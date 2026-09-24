@@ -205,12 +205,14 @@ aPub, bPub, counter, opts?)` → `{ mine, theirs }`; `verifyBondWord(…, spoken
 → `{ ok }`; `buildBondAttestation({ subjectPubHex, summary? })` → kind-31000
 `EventTemplate` (`type:'kindred-bond'`).
 
-Retracting a bond: `buildBondRevocation(assertion, { attesterPubHex, subjectPubHex })`
-is now the **primary** way to retract — it emits a kind-5 deletion carrying `e`
-(the attestation event id), `a` (its addressable coordinate), and `k` (kind `31000`)
-tags, so relays and clients that follow NIP-09 can resolve the deletion without
-extra lookups. `retractBondAssertion(assertion, { attesterPubHex, subjectPubHex })`
-still exists but now takes the same second argument to emit the same tags.
+Retracting a bond: `buildBondRevocation({ subjectPubHex, reason? })` is now the
+**primary** way to retract — it emits a kind-31000 `["status","revoked"]` event
+(nostr-attestations `createRevocation`) at the SAME addressable slot, so it
+replaces the attestation and `verifyBondAttestation` rejects it as `revoked`. Sign
+it with the key that signed the attestation.
+`retractBondAssertion(assertion, { attesterPubHex, subjectPubHex })` remains as a
+supplement: a kind-5 NIP-09 deletion carrying `e` (the attestation event id), `a`
+(its addressable coordinate) and `k` (kind `31000`) tags.
 Const `KINDRED_BOND_NAMESPACE`. The optional `opts`
 (`{ namespace? }`, plus `tolerance?` on `verifyBondWord`)
 exist for **signet-me migration compatibility** — `{ namespace: 'signet:me',
@@ -277,7 +279,7 @@ compromise). Signals, not guarantees.
 `discoverPresent(filter, entries, ownerPubkey, saltHex?)` (throws on mixed persona;
 **also** throws if `saltHex` is given for an OPEN filter or omitted for a KEYED
 one — either mismatch would otherwise silently match nothing, a false "no friends
-here"); `disclosureFor({ salt? })` → `DiscoveryDisclosure`; `buildFilterPublication(p)`
+here"); `disclosureFor(filter: MembershipFilter)` → `DiscoveryDisclosure` (pass the filter `parseFilter` returned); `buildFilterPublication(p)`
 / `parseFilterPublication(event, opts?)` (verifies the Nostr event sig, the in-blob
 Schnorr sig, **and** — `opts.requireAuthorIsSigner`, default `true`, since 0.2.0 —
 that the event's signer IS the in-blob signer, so the namespace/serverId the event
