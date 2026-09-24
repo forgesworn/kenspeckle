@@ -53,7 +53,7 @@
     "typecheck": "tsc --noEmit",
     "vectors:check": "node ./scripts/check-vectors.mjs",
     "check:publishable-deps": "node ./scripts/check-publishable-deps.mjs",
-    "lint:package": "publint && attw --pack . --profile esm-only",
+    "lint:package": "node ./scripts/lint-package.mjs",
     "prepare": "npm run build",
     "prepack": "npm run check:publishable-deps",
     "prepublishOnly": "npm run typecheck && npm test && npm run build && npm run vectors:check"

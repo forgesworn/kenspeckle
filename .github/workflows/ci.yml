@@ -64,4 +64,7 @@ jobs:
       - run: npm run vectors:check
       - run: npm test
       - run: npm run lint:package
-      - run: npm pack --dry-run
+      # --ignore-scripts: this is a packaging SHAPE check (file list, exports), not a release —
+      # the real `prepack` guard (scripts/check-publishable-deps.mjs) still runs, unmodified, on
+      # every actual `npm pack`/`npm publish` (see that script's own doc comment for why).
+      - run: npm pack --dry-run --ignore-scripts
