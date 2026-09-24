@@ -32,7 +32,7 @@ jobs:
         env:
           DEPENDENCY_NAMES: ${{ steps.meta.outputs.dependency-names }}
         run: |
-          if echo "$DEPENDENCY_NAMES" | grep -Eiq '(^|,| )(@noble/|@scure/|nostr-tools|spoken-token|@forgesworn/)'; then
+          if echo "$DEPENDENCY_NAMES" | grep -Eiq '(^|,| )(@noble/|@scure/|nostr-tools|nostr-attestations|spoken-token|@forgesworn/)'; then
             echo "blocked=true" >> "$GITHUB_OUTPUT"
           else
             echo "blocked=false" >> "$GITHUB_OUTPUT"

@@ -33,6 +33,7 @@ updates:
           - "@scure/*"
           - "nostr-tools"
           - "spoken-token"
+          - "nostr-attestations"
           - "@forgesworn/*"
       dev-minor:
         dependency-type: development
