@@ -4,9 +4,8 @@
 //   (1) JoinInvite — a "come join this game" token. The inviter signs a canonical string over the
 //       (namespace, serverId, inviterPubkey, nonce, expiresAt) tuple with @noble schnorr (a
 //       CUSTOM-payload sig, not a Nostr event), and an invitee verifies + expiry-checks it before
-//       acting. The sig binds the exact field values, so a free-form `serverId` containing colons is
-//       safe here (the canonical string is only ever RECOMPUTED from the parsed structured fields —
-//       it is never the sole carrier, unlike a capability whose string IS the wire).
+//       acting. v2 signs a JSON ARRAY of the fields, so a colon in `namespace`/`serverId` cannot
+//       shift a field boundary (v1's colon-joined string could — see the boundary-shift test).
 //   (2) verifyBondAttestation — single-attestation anti-sybil brick (spec §9.2). Verifies ONE real
 //       kindred-bond attestation (the kind-31000 event K-4's `buildBondAttestation` builds + the
 //       caller finalizes) and returns the attester + subject. NO graph traversal, NO counting — the
@@ -24,17 +23,24 @@ import { schnorr } from '@noble/curves/secp256k1.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure'
 import { buildBondAttestation } from './bond.js'
-import { buildJoinInvite, parseJoinInvite, serializeJoinInvite, verifyBondAttestation } from './invite.js'
-import type { JoinInvite, NostrEvent } from './types.js'
+import { createRevocation } from 'nostr-attestations'
+import {
+  buildJoinInvite,
+  generateInviteNonce,
+  parseJoinInvite,
+  serializeJoinInvite,
+  verifyBondAttestation,
+} from './invite.js'
+import type { JoinInvite } from './invite.js'
+import type { NostrEvent } from './types.js'
 
 // --- Fixtures -------------------------------------------------------------------------------------
 
 const NAMESPACE = 'com.example.game'
 const SERVER_ID = 'play.example.com'
-// A free-form serverId that contains colons — proves colon-in-serverId is unambiguous (the canonical
-// string is recomputed from parsed fields, never the sole carrier).
+// A free-form serverId that contains colons — v2's JSON-array encoding keeps it unambiguous.
 const COLON_SERVER_ID = 'play.example.com:7777:eu-west'
-const NONCE = 'deadbeefcafebabe' // even-length lowercase hex
+const NONCE = 'deadbeefcafebabe'.repeat(2) // 16 bytes of lowercase hex (the v2 minimum)
 
 /** A fresh real keypair: 32-byte secret + its 64-hex x-only pubkey (matches schnorr.getPublicKey). */
 function freshInviter(): { privHex: string; pubHex: string } {
@@ -99,7 +105,7 @@ describe('buildJoinInvite / parseJoinInvite — signed invite round-trip', () =>
       { namespace: NAMESPACE, serverId: SERVER_ID, inviterPubkey: pubHex, nonce: NONCE },
       privHex,
     )
-    expect(invite.v).toBe(1)
+    expect(invite.v).toBe(2)
     expect(invite.sig).toMatch(/^[0-9a-f]{128}$/) // 64-byte schnorr sig
     expect(invite.inviterPubkey).toBe(pubHex)
 
@@ -121,22 +127,20 @@ describe('buildJoinInvite / parseJoinInvite — signed invite round-trip', () =>
     expect(parsed.expiresAt).toBe(expiresAt)
   })
 
-  it('lowercase-normalizes hex fields on parse (uppercase pubkey/nonce in JSON → lowercased out)', () => {
+  it('rejects non-lowercase hex on parse (one canonical wire spelling per invite)', () => {
     const { privHex, pubHex } = freshInviter()
     const invite = buildJoinInvite(
       { namespace: NAMESPACE, serverId: SERVER_ID, inviterPubkey: pubHex, nonce: NONCE },
       privHex,
     )
-    // Uppercase the hex fields in the wire JSON; the recomputed digest + sig must still verify because
-    // the canonical string lowercases, and the parsed output is normalized.
-    const wire = JSON.parse(JSON.stringify(invite)) as JoinInvite
-    wire.inviterPubkey = wire.inviterPubkey.toUpperCase()
-    wire.nonce = wire.nonce.toUpperCase()
-    wire.sig = wire.sig.toUpperCase()
-    const parsed = parseJoinInvite(new TextEncoder().encode(JSON.stringify(wire)))
-    expect(parsed.inviterPubkey).toBe(pubHex) // lowercased
-    expect(parsed.nonce).toBe(NONCE)
-    expect(parsed.sig).toBe(invite.sig) // lowercased back
+    // v1 lowercased on parse, so the same invite had several valid wire spellings. v2 accepts only
+    // the canonical lowercase spelling of each hex field.
+    for (const field of ['inviterPubkey', 'nonce', 'sig'] as const) {
+      const wire = JSON.parse(JSON.stringify(invite)) as JoinInvite
+      wire[field] = wire[field].toUpperCase()
+      expect(() => parseJoinInvite(new TextEncoder().encode(JSON.stringify(wire)))).toThrow(new RegExp(field))
+    }
+    expect(parseJoinInvite(toWireBytes(invite)).inviterPubkey).toBe(pubHex)
   })
 })
 
@@ -236,13 +240,13 @@ describe('parseJoinInvite — size + malformed guards', () => {
     expect(() => parseJoinInvite(garbage)).toThrow(/malformed JSON/)
   })
 
-  it('throws when v !== 1', () => {
+  it('throws when v !== 2 (a v1 invite is not accepted — no fallback)', () => {
     const { privHex, pubHex } = freshInviter()
     const invite = buildJoinInvite(
       { namespace: NAMESPACE, serverId: SERVER_ID, inviterPubkey: pubHex, nonce: NONCE },
       privHex,
     )
-    const wire = { ...JSON.parse(JSON.stringify(invite)), v: 2 }
+    const wire = { ...JSON.parse(JSON.stringify(invite)), v: 1 }
     expect(() => parseJoinInvite(new TextEncoder().encode(JSON.stringify(wire)))).toThrow(/version/)
   })
 
@@ -375,7 +379,7 @@ describe('verifyBondAttestation — single-attestation verification (spec §9.2)
       sk,
     ) as NostrEvent
     const wire = JSON.parse(JSON.stringify(ev)) as NostrEvent
-    expect(verifyBondAttestation(wire)).toEqual({ ok: false })
+    expect(verifyBondAttestation(wire)).toMatchObject({ ok: false })
   })
 
   it('rejects a tampered attestation whose signature no longer verifies', () => {
@@ -385,7 +389,7 @@ describe('verifyBondAttestation — single-attestation verification (spec §9.2)
     const tampered = tamperedFromWire(finalized, (e) => {
       e.content = 'tampered-after-signing'
     })
-    expect(verifyBondAttestation(tampered)).toEqual({ ok: false })
+    expect(verifyBondAttestation(tampered)).toMatchObject({ ok: false })
   })
 
   it('rejects a kind-31000 event missing the kindred-bond type tag', () => {
@@ -401,7 +405,7 @@ describe('verifyBondAttestation — single-attestation verification (spec §9.2)
       sk,
     ) as NostrEvent
     const wire = JSON.parse(JSON.stringify(ev)) as NostrEvent
-    expect(verifyBondAttestation(wire)).toEqual({ ok: false })
+    expect(verifyBondAttestation(wire)).toMatchObject({ ok: false })
   })
 
   it('rejects a kind-31000 kindred-bond event missing the subject p-tag', () => {
@@ -416,7 +420,7 @@ describe('verifyBondAttestation — single-attestation verification (spec §9.2)
       sk,
     ) as NostrEvent
     const wire = JSON.parse(JSON.stringify(ev)) as NostrEvent
-    expect(verifyBondAttestation(wire)).toEqual({ ok: false })
+    expect(verifyBondAttestation(wire)).toMatchObject({ ok: false })
   })
 
   it('rejects an event whose type tag is not exactly "kindred-bond" (e.g. a different attestation)', () => {
@@ -434,6 +438,179 @@ describe('verifyBondAttestation — single-attestation verification (spec §9.2)
       sk,
     ) as NostrEvent
     const wire = JSON.parse(JSON.stringify(ev)) as NostrEvent
-    expect(verifyBondAttestation(wire)).toEqual({ ok: false })
+    expect(verifyBondAttestation(wire)).toMatchObject({ ok: false })
+  })
+})
+
+// --- v2 hardening (audit H2 / L5) -----------------------------------------------------------------
+
+/** Encode an arbitrary (possibly hostile) invite-shaped object to wire bytes. */
+function rawWire(obj: unknown): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(obj))
+}
+
+describe('JoinInvite v2 — injective canonical encoding (H2)', () => {
+  it('rejects a cross-field boundary shift: ("game","eu:prod") cannot be replayed as ("game:eu","prod")', () => {
+    const { privHex, pubHex } = freshInviter()
+    const invite = buildJoinInvite({ namespace: 'game', serverId: 'eu:prod', inviterPubkey: pubHex, nonce: NONCE }, privHex)
+    // Under v1's colon-joined string both tuples flattened to the same bytes, so this verified.
+    const shifted = { ...JSON.parse(JSON.stringify(invite)), namespace: 'game:eu', serverId: 'prod' }
+    expect(() => parseJoinInvite(rawWire(shifted))).toThrow(/bad signature/)
+    // And the untouched invite still verifies.
+    expect(parseJoinInvite(toWireBytes(invite)).serverId).toBe('eu:prod')
+  })
+
+  it('rejects a shift smuggled through a quote character (JSON escaping keeps fields distinct)', () => {
+    const { privHex, pubHex } = freshInviter()
+    const invite = buildJoinInvite({ namespace: 'a","b', serverId: 'c', inviterPubkey: pubHex, nonce: NONCE }, privHex)
+    const shifted = { ...JSON.parse(JSON.stringify(invite)), namespace: 'a', serverId: 'b","c' }
+    expect(() => parseJoinInvite(rawWire(shifted))).toThrow(/bad signature/)
+  })
+
+  it('rejects lone surrogates at build and at parse (no U+FFFD collapse)', () => {
+    const { privHex, pubHex } = freshInviter()
+    expect(() =>
+      buildJoinInvite({ namespace: NAMESPACE, serverId: '\uD800', inviterPubkey: pubHex, nonce: NONCE }, privHex),
+    ).toThrow(/serverId/)
+    expect(() =>
+      buildJoinInvite({ namespace: 'x\uDC00', serverId: SERVER_ID, inviterPubkey: pubHex, nonce: NONCE }, privHex),
+    ).toThrow(/namespace/)
+    // A signature made for "\uFFFD" must not be accepted for a wire "\uD800".
+    const invite = buildJoinInvite({ namespace: NAMESPACE, serverId: '\uFFFD', inviterPubkey: pubHex, nonce: NONCE }, privHex)
+    const wire = JSON.stringify(invite).replace('\uFFFD', '\\ud800')
+    expect(() => parseJoinInvite(new TextEncoder().encode(wire))).toThrow(/serverId/)
+    // A well-formed astral character (a surrogate PAIR) is fine.
+    const ok = buildJoinInvite({ namespace: NAMESPACE, serverId: 'srv-\u{1F600}', inviterPubkey: pubHex, nonce: NONCE }, privHex)
+    expect(parseJoinInvite(toWireBytes(ok)).serverId).toBe('srv-\u{1F600}')
+  })
+
+  it('rejects a v1-shaped invite even with an otherwise valid structure', () => {
+    const { privHex, pubHex } = freshInviter()
+    const invite = buildJoinInvite({ namespace: NAMESPACE, serverId: SERVER_ID, inviterPubkey: pubHex, nonce: NONCE }, privHex)
+    expect(() => parseJoinInvite(rawWire({ ...invite, v: 1 }))).toThrow(/version/)
+  })
+})
+
+describe('JoinInvite v2 — nonce and expiresAt hygiene (L5)', () => {
+  it('requires at least 16 bytes of nonce at build and parse', () => {
+    const { privHex, pubHex } = freshInviter()
+    const short = 'ab'.repeat(15)
+    expect(() =>
+      buildJoinInvite({ namespace: NAMESPACE, serverId: SERVER_ID, inviterPubkey: pubHex, nonce: short }, privHex),
+    ).toThrow(/nonce/)
+    const invite = buildJoinInvite({ namespace: NAMESPACE, serverId: SERVER_ID, inviterPubkey: pubHex, nonce: NONCE }, privHex)
+    expect(() => parseJoinInvite(rawWire({ ...invite, nonce: 'ab' }))).toThrow(/nonce/)
+  })
+
+  it('generateInviteNonce yields 16 fresh bytes of lowercase hex that build accepts', () => {
+    const a = generateInviteNonce()
+    const b = generateInviteNonce()
+    expect(a).toMatch(/^[0-9a-f]{32}$/)
+    expect(a).not.toBe(b)
+    const { privHex, pubHex } = freshInviter()
+    expect(() =>
+      buildJoinInvite({ namespace: NAMESPACE, serverId: SERVER_ID, inviterPubkey: pubHex, nonce: a }, privHex),
+    ).not.toThrow()
+  })
+
+  it.each([1.5, -1, 1e21, Number.NaN, Number.POSITIVE_INFINITY])('rejects expiresAt=%s at build', (expiresAt) => {
+    const { privHex, pubHex } = freshInviter()
+    expect(() =>
+      buildJoinInvite({ namespace: NAMESPACE, serverId: SERVER_ID, inviterPubkey: pubHex, nonce: NONCE, expiresAt }, privHex),
+    ).toThrow(/expiresAt/)
+  })
+
+  it.each(['1.5', '-1', '1e21', '1e400'])('rejects expiresAt=%s at parse', (literal) => {
+    const { privHex, pubHex } = freshInviter()
+    const invite = buildJoinInvite({ namespace: NAMESPACE, serverId: SERVER_ID, inviterPubkey: pubHex, nonce: NONCE }, privHex)
+    const wire = JSON.stringify(invite).replace(/}$/, `,"expiresAt":${literal}}`)
+    expect(() => parseJoinInvite(new TextEncoder().encode(wire))).toThrow(/expiresAt/)
+  })
+
+  it('rejects building an invite that is already expired when a clock is supplied', () => {
+    const { privHex, pubHex } = freshInviter()
+    const p = { namespace: NAMESPACE, serverId: SERVER_ID, inviterPubkey: pubHex, nonce: NONCE, expiresAt: 100 }
+    expect(() => buildJoinInvite(p, privHex, 101)).toThrow(/past/)
+    expect(() => buildJoinInvite(p, privHex, 100)).not.toThrow() // exclusive, like parse
+  })
+
+  it('serializeJoinInvite emits only the declared fields (no caller extras on the wire)', () => {
+    const { privHex, pubHex } = freshInviter()
+    const invite = buildJoinInvite({ namespace: NAMESPACE, serverId: SERVER_ID, inviterPubkey: pubHex, nonce: NONCE }, privHex)
+    const leaky = { ...invite, inviterPriv: privHex } as JoinInvite
+    const text = new TextDecoder().decode(serializeJoinInvite(leaky))
+    expect(text).not.toContain(privHex)
+    expect(parseJoinInvite(new TextEncoder().encode(text))).toEqual(invite)
+  })
+})
+
+// --- verifyBondAttestation: lifecycle + identity (audit H1 / L4) -----------------------------------
+
+/** Finalize an arbitrary template and return a symbol-free wire clone. */
+function signedWire(template: { kind: number; tags: string[][]; content: string }, sk: Uint8Array): NostrEvent {
+  const ev = finalizeEvent({ ...template, created_at: 1_700_000_000 }, sk)
+  return JSON.parse(JSON.stringify(ev)) as NostrEvent
+}
+
+describe('verifyBondAttestation — revoked / expired / self (H1)', () => {
+  const subject = 'cd'.repeat(32)
+
+  it('rejects a revocation (status:revoked) with reason "revoked"', () => {
+    const sk = generateSecretKey()
+    const revocation = signedWire(createRevocation({ type: 'kindred-bond', identifier: subject, subject }), sk)
+    expect(verifyBondAttestation(revocation)).toEqual({ ok: false, reason: 'revoked' })
+  })
+
+  it('rejects an attestation past its NIP-40 expiration with reason "expired" (injected clock)', () => {
+    const sk = generateSecretKey()
+    const template = buildBondAttestation({ subjectPubHex: subject })
+    template.tags.push(['expiration', '1000'])
+    const ev = signedWire(template, sk)
+    expect(verifyBondAttestation(ev, 2000)).toEqual({ ok: false, reason: 'expired' })
+    expect(verifyBondAttestation(ev, 999).ok).toBe(true)
+  })
+
+  it('rejects an attestation whose valid_from is still in the future', () => {
+    const sk = generateSecretKey()
+    const template = buildBondAttestation({ subjectPubHex: subject })
+    template.tags.push(['valid_from', '5000'])
+    expect(verifyBondAttestation(signedWire(template, sk), 4000)).toEqual({ ok: false, reason: 'not-yet-active' })
+  })
+
+  it('rejects a self-attestation (attester === subject) with reason "self-attestation"', () => {
+    const sk = generateSecretKey()
+    const self = getPublicKey(sk)
+    const ev = signedWire(buildBondAttestation({ subjectPubHex: self }), sk)
+    expect(verifyBondAttestation(ev)).toEqual({ ok: false, reason: 'self-attestation' })
+  })
+})
+
+describe('verifyBondAttestation — subject normalisation (L4)', () => {
+  const subject = 'cd'.repeat(32)
+
+  it('lowercases an uppercase p-tag subject in the result', () => {
+    const sk = generateSecretKey()
+    const template = buildBondAttestation({ subjectPubHex: subject })
+    template.tags = template.tags.map((t) => (t[0] === 'p' ? ['p', subject.toUpperCase()] : t))
+    const result = verifyBondAttestation(signedWire(template, sk))
+    expect(result).toEqual({ ok: true, attesterPubHex: getPublicKey(sk), subjectPubHex: subject })
+  })
+
+  it('rejects two p-tags (ambiguous subject)', () => {
+    const sk = generateSecretKey()
+    const template = buildBondAttestation({ subjectPubHex: subject })
+    template.tags.push(['p', 'ef'.repeat(32)])
+    expect(verifyBondAttestation(signedWire(template, sk))).toEqual({ ok: false, reason: 'bad-subject' })
+  })
+
+  it('rejects a d-tag that does not name the p-tag subject (it would dodge a revocation)', () => {
+    const sk = generateSecretKey()
+    const template = buildBondAttestation({ subjectPubHex: subject })
+    template.tags = template.tags.map((t) => (t[0] === 'd' ? ['d', `kindred-bond:${'ef'.repeat(32)}`] : t))
+    expect(verifyBondAttestation(signedWire(template, sk))).toEqual({ ok: false, reason: 'd-tag-mismatch' })
+    // An uppercase d is a DIFFERENT address from the lowercase one a revocation targets.
+    const upper = buildBondAttestation({ subjectPubHex: subject })
+    upper.tags = upper.tags.map((t) => (t[0] === 'd' ? ['d', `kindred-bond:${subject.toUpperCase()}`] : t))
+    expect(verifyBondAttestation(signedWire(upper, sk))).toEqual({ ok: false, reason: 'd-tag-mismatch' })
   })
 })

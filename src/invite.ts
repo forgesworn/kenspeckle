@@ -3,7 +3,7 @@
 // Two surfaces, one subpath:
 //
 //   (1) JoinInvite — the "come join this game" token that fixes the cold-start gap (§9.1). An inviter
-//       signs a CANONICAL STRING over the (namespace, serverId, inviterPubkey, nonce, expiresAt) tuple
+//       signs a CANONICAL ENCODING of the (namespace, serverId, inviterPubkey, nonce, expiresAt) tuple
 //       with @noble `schnorr` — a CUSTOM-PAYLOAD signature, NOT a Nostr event (an invite is not an
 //       event; it's a structured token carried over QR/URL). An invitee parses the bytes, verifies the
 //       Schnorr sig against the embedded `inviterPubkey`, and expiry-checks before opening a §5
@@ -11,25 +11,29 @@
 //
 //   (2) verifyBondAttestation — the single-attestation anti-sybil BRICK (§9.2). Verifies ONE real
 //       `kindred-bond` attestation (the kind-31000 event K-4's `buildBondAttestation` builds + the
-//       caller finalizes) and returns `{ ok, attesterPubHex, subjectPubHex }`. Collective/guild
-//       sybil-resistance — counting a member's attestations into a set of DISTINCT verified humans —
-//       lives in the CONSUMING APP. Kenspeckle provides the brick + per-attestation verification, but
-//       NO graph traversal, NO counting (that would breach the §2 non-goals).
+//       caller finalizes) and returns `{ ok, attesterPubHex, subjectPubHex }`. Revoked, expired and
+//       self-attestations are rejected with a distinct `reason`. Collective/guild sybil-resistance —
+//       counting a member's attestations into a set of DISTINCT verified humans — lives in the
+//       CONSUMING APP. Kenspeckle provides the brick + per-attestation verification, but NO graph
+//       traversal, NO counting (that would breach the §2 non-goals).
 //
 // This is a STANDALONE subpath entry (`import { ... } from 'kenspeckle/invite'`); it is deliberately NOT
 // re-exported from the `.` barrel.
 //
-// --- Canonical invite signing form (DOCUMENT VERBATIM in PROTOCOL.md, K-8) ------------------------
+// --- Canonical invite signing form, v2 (DOCUMENT VERBATIM in PROTOCOL.md §6) -----------------------
 //
-//   digest = SHA-256( utf8( `kenspeckle-invite:v1:${namespace}:${serverId}:${inviterPubkey}:${nonce}:${expiresAt ?? ''}` ) )
+//   digest = SHA-256( utf8( JSON.stringify(
+//              ["kenspeckle-invite", 2, namespace, serverId, inviterPubkey, nonce, expiresAt ?? null] ) ) )
 //   sig    = bytesToHex( schnorr.sign( digest, hexToBytes(inviterPriv) ) )
 //
-// `serverId` is free-form and MAY contain colons. That is safe here — UNLIKE tessera-kit's capability
-// token, whose canonical string was the SOLE wire carrier (so an embedded colon could shift field
-// boundaries). Here the invite is parsed from a structured JSON OBJECT and the sig binds the exact
-// field VALUES; the canonical string is only ever RECOMPUTED from the already-parsed fields, never
-// re-split out of a flat string. So a colon in `serverId` cannot create field-boundary ambiguity.
-// We still validate every field (defence in depth + untrusted-input guard).
+// WHY A JSON ARRAY, NOT A COLON-JOINED STRING: v1 signed `kenspeckle-invite:v1:${ns}:${serverId}:…`.
+// `namespace` and `serverId` are free text that may contain `:`, so that string was NOT injective: an
+// invite signed for `{namespace:"game", serverId:"eu:prod"}` verified as `{namespace:"game:eu",
+// serverId:"prod"}` — recomputing from parsed fields does not help when two different field tuples
+// flatten to the same bytes. A JSON array quotes and escapes every string, so distinct tuples always
+// encode to distinct bytes. Every string must also be well-formed UTF-16: `utf8()` maps a lone
+// surrogate to U+FFFD, which would make `"\uD800"` and `"\uFFFD"` collide; such strings are rejected
+// at build AND parse. v1 invites are NOT accepted (no fallback — nothing consumed them before v2).
 //
 // build → object, parse → bytes (the ASYMMETRY): `buildJoinInvite` returns a `JoinInvite` OBJECT (the
 // caller embeds it in whatever transport they like). The transport carries the JSON; `parseJoinInvite`
@@ -42,14 +46,15 @@
 
 import { schnorr } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
-import { utf8ToBytes, bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
+import { utf8ToBytes, bytesToHex, hexToBytes, randomBytes } from '@noble/hashes/utils.js'
+import { isValid } from 'nostr-attestations'
 import { verifyEvent } from 'nostr-tools/pure'
 import type { NostrEvent } from './types.js'
 
 /** The signed "come join this game" token (spec §9.1). `sig` is a 64-byte (128-hex) Schnorr signature
- *  over the canonical string by the inviter's key. `expiresAt` is optional unix seconds. */
+ *  over the v2 canonical encoding by the inviter's key. `expiresAt` is optional unix seconds. */
 export interface JoinInvite {
-  v: 1
+  v: 2
   namespace: string
   serverId: string
   inviterPubkey: string
@@ -58,23 +63,51 @@ export interface JoinInvite {
   sig: string
 }
 
+/** Current (and only accepted) invite wire version. */
+export const INVITE_VERSION = 2
+
+/** Domain tag at index 0 of the canonical array. */
+export const INVITE_DOMAIN = 'kenspeckle-invite'
+
+/** Minimum nonce entropy, in bytes. A short nonce makes (inviter, nonce) collide across invites, which
+ *  defeats the dedupe-by-(inviter, nonce) replay guidance in PROTOCOL.md §6.3. */
+export const INVITE_NONCE_MIN_BYTES = 16
+
 /** Max accepted blob size, in bytes. Enforced BEFORE decode/parse (cheap DoS guard). Mirrors the
  *  8192-byte cap used across kenspeckle's other untrusted-input parsers (handshake) + signet-app. */
 const MAX_BLOB_BYTES = 8192
 
-/** Exactly 64 hex chars = 32 bytes (case-insensitive; lowercased on the way out). */
+/** Exactly 64 hex chars = 32 bytes (case-insensitive; the builder lowercases on the way out). */
 const HEX64 = /^[0-9a-f]{64}$/i
-/** Exactly 128 hex chars = 64 bytes — a Schnorr signature (case-insensitive). */
-const HEX128 = /^[0-9a-f]{128}$/i
-/** Any non-empty run of hex (even length). The nonce is opaque entropy; we only require it be hex. */
-const HEX_ANY = /^(?:[0-9a-f]{2})+$/i
+/** Exactly 64 LOWERCASE hex chars. The parser accepts only the canonical spelling. */
+const HEX64_LOWER = /^[0-9a-f]{64}$/
+/** Exactly 128 LOWERCASE hex chars = 64 bytes — a Schnorr signature. */
+const HEX128_LOWER = /^[0-9a-f]{128}$/
+/** At least 16 bytes of even-length hex (case-insensitive; the builder lowercases). */
+const NONCE_HEX = /^(?:[0-9a-f]{2}){16,}$/i
+/** The same, lowercase only (parse side: one wire spelling per invite). */
+const NONCE_HEX_LOWER = /^(?:[0-9a-f]{2}){16,}$/
+
+/** A lone (unpaired) UTF-16 surrogate. Hand-rolled rather than `String.prototype.isWellFormed` so the
+ *  check does not depend on the ES2024 lib / runtime. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+
+/** A non-empty string with no lone surrogates. */
+function isWellFormedText(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && !LONE_SURROGATE.test(value)
+}
+
+/** A non-negative safe integer (unix seconds). Rules out floats, `1e21` (which stringifies as
+ *  `"1e+21"`), negatives, NaN and Infinity. */
+function isUnixSeconds(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
 
 /**
- * Build the canonical signing string for an invite, then SHA-256 it to the 32-byte digest the Schnorr
- * sig is computed over. Fields are used VERBATIM as the caller supplied (the caller has already
- * validated + lowercased the hex fields). `expiresAt` renders as its decimal string, or `''` when
- * absent — so an invite with no expiry and an invite with `expiresAt:0` produce DIFFERENT digests
- * (`...:nonce:` vs `...:nonce:0`), which is correct (they are different invites).
+ * The v2 canonical encoding, SHA-256'd to the 32-byte digest the Schnorr sig is computed over:
+ * `sha256(utf8(JSON.stringify(["kenspeckle-invite", 2, namespace, serverId, inviterPubkey, nonce,
+ * expiresAt ?? null])))`. Callers pass already-validated, lowercased fields. An invite with no expiry
+ * encodes `null`, one with `expiresAt: 0` encodes `0` — different digests, which is correct.
  */
 function inviteDigest(p: {
   namespace: string
@@ -83,7 +116,15 @@ function inviteDigest(p: {
   nonce: string
   expiresAt?: number
 }): Uint8Array {
-  const canonical = `kenspeckle-invite:v1:${p.namespace}:${p.serverId}:${p.inviterPubkey}:${p.nonce}:${p.expiresAt ?? ''}`
+  const canonical = JSON.stringify([
+    INVITE_DOMAIN,
+    INVITE_VERSION,
+    p.namespace,
+    p.serverId,
+    p.inviterPubkey,
+    p.nonce,
+    p.expiresAt ?? null,
+  ])
   return sha256(utf8ToBytes(canonical))
 }
 
@@ -91,42 +132,52 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === 'object' && !Array.isArray(v)
 }
 
+/** A fresh 16-byte (32-hex) invite nonce from the platform CSPRNG. */
+export function generateInviteNonce(): string {
+  return bytesToHex(randomBytes(INVITE_NONCE_MIN_BYTES))
+}
+
 /**
- * Build a signed `JoinInvite` for a server the inviter is vouching entry into.
+ * Build a signed v2 `JoinInvite` for a server the inviter is vouching entry into.
  *
  * Validates the inviter's private key (64-hex), the embedded `inviterPubkey` (64-hex), the `nonce`
- * (hex), and that `namespace`/`serverId` are non-empty strings. As an anti-forgery guard it also
- * asserts that `schnorr.getPublicKey(priv)` EQUALS `inviterPubkey` — so a caller cannot mint an invite
- * claiming an inviter key they don't actually control (the sig would verify against `inviterPubkey`,
- * so without this check a caller could put SOMEONE ELSE'S pubkey in the field and sign with their own
- * key, producing an invite that fails verification only at parse time; we fail fast at build instead).
+ * (≥16 bytes of hex — use `generateInviteNonce`), that `namespace`/`serverId` are non-empty,
+ * well-formed (no lone surrogates) strings, and that `expiresAt`, when present, is a non-negative safe
+ * integer. If `now` is supplied, an `expiresAt` already strictly in the past is rejected (the same
+ * exclusive rule `parseJoinInvite` applies). As an anti-forgery guard it also asserts that
+ * `schnorr.getPublicKey(priv)` EQUALS `inviterPubkey` — so a caller cannot mint an invite claiming an
+ * inviter key they don't control (it would only fail at parse time; we fail fast at build instead).
  *
- * The private-key byte copy is zeroized in a `finally`. (JS `bigint` scalars inside `@noble` cannot be
- * wiped — same honest limitation documented for `deriveBondSecret`; we wipe the byte copy we hold.)
+ * The private-key byte copy handed to `@noble` is zeroized in a `finally`. (JS `bigint` scalars inside
+ * `@noble` cannot be wiped — see PROTOCOL.md §1.6; we wipe the byte copy we hold.)
  *
  * @param p              The invite fields minus `v` and `sig` (those are computed here).
  * @param inviterPrivHex The inviter's persona private key, 64 hex chars (case-insensitive).
- * @returns A fully-populated `{ v:1, ...p, sig }` invite object (NOT bytes — the caller serializes).
+ * @param now            Optional clock (unix seconds) for the already-expired check. Omitted → no check.
+ * @returns A fully-populated `{ v:2, ...p, sig }` invite object (NOT bytes — the caller serializes).
  * @throws On any malformed field, or if `inviterPubkey` doesn't match the key derived from the priv.
  */
-export function buildJoinInvite(p: Omit<JoinInvite, 'v' | 'sig'>, inviterPrivHex: string): JoinInvite {
+export function buildJoinInvite(p: Omit<JoinInvite, 'v' | 'sig'>, inviterPrivHex: string, now?: number): JoinInvite {
   if (typeof inviterPrivHex !== 'string' || !HEX64.test(inviterPrivHex)) {
     throw new Error('invite: inviterPriv must be 64 hex chars')
   }
   if (typeof p.inviterPubkey !== 'string' || !HEX64.test(p.inviterPubkey)) {
     throw new Error('invite: inviterPubkey must be 64 hex chars')
   }
-  if (typeof p.nonce !== 'string' || !HEX_ANY.test(p.nonce)) {
-    throw new Error('invite: nonce must be a non-empty even-length hex string')
+  if (typeof p.nonce !== 'string' || !NONCE_HEX.test(p.nonce)) {
+    throw new Error(`invite: nonce must be at least ${INVITE_NONCE_MIN_BYTES} bytes of even-length hex`)
   }
-  if (typeof p.namespace !== 'string' || p.namespace.length === 0) {
-    throw new Error('invite: namespace must be a non-empty string')
+  if (!isWellFormedText(p.namespace)) {
+    throw new Error('invite: namespace must be a non-empty well-formed string')
   }
-  if (typeof p.serverId !== 'string' || p.serverId.length === 0) {
-    throw new Error('invite: serverId must be a non-empty string')
+  if (!isWellFormedText(p.serverId)) {
+    throw new Error('invite: serverId must be a non-empty well-formed string')
   }
-  if (p.expiresAt !== undefined && (typeof p.expiresAt !== 'number' || !Number.isFinite(p.expiresAt))) {
-    throw new Error('invite: expiresAt must be a finite number when present')
+  if (p.expiresAt !== undefined && !isUnixSeconds(p.expiresAt)) {
+    throw new Error('invite: expiresAt must be a non-negative safe integer when present')
+  }
+  if (now !== undefined && p.expiresAt !== undefined && now > p.expiresAt) {
+    throw new Error('invite: expiresAt is already in the past')
   }
 
   const namespace = p.namespace
@@ -146,11 +197,11 @@ export function buildJoinInvite(p: Omit<JoinInvite, 'v' | 'sig'>, inviterPrivHex
     const digest = inviteDigest({ namespace, serverId, inviterPubkey, nonce, expiresAt: p.expiresAt })
     const sig = bytesToHex(schnorr.sign(digest, privBytes))
 
-    const invite: JoinInvite = { v: 1, namespace, serverId, inviterPubkey, nonce, sig }
+    const invite: JoinInvite = { v: INVITE_VERSION, namespace, serverId, inviterPubkey, nonce, sig }
     if (p.expiresAt !== undefined) invite.expiresAt = p.expiresAt
     return invite
   } finally {
-    privBytes.fill(0) // best-effort zeroize; see the zeroization contract in PROTOCOL.md / bond.ts
+    privBytes.fill(0) // best-effort zeroize; see the zeroization contract in PROTOCOL.md §1.6
   }
 }
 
@@ -158,16 +209,24 @@ export function buildJoinInvite(p: Omit<JoinInvite, 'v' | 'sig'>, inviterPrivHex
  * Serialize a `JoinInvite` object to its canonical wire bytes — the symmetry counterpart to
  * `parseJoinInvite` (which takes bytes). `buildJoinInvite` returns the OBJECT and `parseJoinInvite`
  * consumes BYTES (the build→object / parse→bytes asymmetry documented above), so a consumer needs an
- * object→bytes step between them. This is exactly `new TextEncoder().encode(JSON.stringify(invite))`;
- * exposing it as a named helper means callers (and tests) no longer hand-roll the encode, and the wire
- * encoding has ONE definition. The transport (QR / URL) carries these bytes; the round-trip is
+ * object→bytes step between them. Only the declared fields are emitted (an explicit projection, never
+ * the caller's object); the transport (QR / URL) carries these bytes and the round-trip is
  * `build → serialize → parse`.
  *
  * @param invite A fully-populated `JoinInvite` (typically straight from `buildJoinInvite`).
  * @returns UTF-8 JSON bytes ready for the transport.
  */
 export function serializeJoinInvite(invite: JoinInvite): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify(invite))
+  const wire: JoinInvite = {
+    v: invite.v,
+    namespace: invite.namespace,
+    serverId: invite.serverId,
+    inviterPubkey: invite.inviterPubkey,
+    nonce: invite.nonce,
+    sig: invite.sig,
+  }
+  if (invite.expiresAt !== undefined) wire.expiresAt = invite.expiresAt
+  return new TextEncoder().encode(JSON.stringify(wire))
 }
 
 /**
@@ -175,15 +234,20 @@ export function serializeJoinInvite(invite: JoinInvite): Uint8Array {
  * and (if present) expiry.
  *
  * Order matters: the 8192-byte size cap is checked BEFORE any UTF-8 decode or JSON parse (cheap DoS
- * guard). A non-JSON blob surfaces a clear `Error` (never a raw `SyntaxError` leak). Every field is
- * validated, hex is lowercase-normalized, then the canonical digest is RECOMPUTED from the parsed
- * fields and the Schnorr sig verified against the embedded `inviterPubkey`. Finally, if `expiresAt` is
- * present and `now` is strictly past it, the invite is rejected as expired.
+ * guard). A non-JSON blob surfaces a clear `Error` (never a raw `SyntaxError` leak). Only `v === 2` is
+ * accepted. Every field is validated — hex fields must already be lowercase (one wire spelling per
+ * invite), the nonce is ≥16 bytes, strings must be well-formed, `expiresAt` a non-negative safe integer
+ * — then the v2 canonical digest is RECOMPUTED from the parsed fields and the Schnorr sig verified
+ * against the embedded `inviterPubkey`. Finally, if `expiresAt` is present and `now` is strictly past
+ * it, the invite is rejected as expired.
+ *
+ * A valid signature does not make an invite single-use: dedupe on `(inviterPubkey, nonce)` if an
+ * invite must be redeemable once (PROTOCOL.md §6.3).
  *
  * @param blob The decoded invite bytes (UTF-8 JSON).
  * @param now  Optional injected clock (unix seconds) for deterministic expiry tests. Defaults to the
  *             wall clock. Expiry is EXCLUSIVE: `now === expiresAt` is still valid (not yet past).
- * @returns The typed, hex-normalized `JoinInvite`.
+ * @returns The typed `JoinInvite`.
  * @throws  On oversize, malformed JSON, any bad field, a bad signature, or an expired invite.
  */
 export function parseJoinInvite(blob: Uint8Array, now?: number): JoinInvite {
@@ -202,42 +266,46 @@ export function parseJoinInvite(blob: Uint8Array, now?: number): JoinInvite {
 
   // (3) Structural + field guards.
   if (!isRecord(raw)) throw new Error('invite: payload must be a JSON object')
-  if (raw.v !== 1) throw new Error('invite: unsupported version (v must be 1)')
+  if (raw.v !== INVITE_VERSION) throw new Error(`invite: unsupported version (v must be ${INVITE_VERSION})`)
 
-  if (typeof raw.namespace !== 'string' || raw.namespace.length === 0) {
-    throw new Error('invite: namespace must be a non-empty string')
+  if (!isWellFormedText(raw.namespace)) {
+    throw new Error('invite: namespace must be a non-empty well-formed string')
   }
-  if (typeof raw.serverId !== 'string' || raw.serverId.length === 0) {
-    throw new Error('invite: serverId must be a non-empty string')
+  if (!isWellFormedText(raw.serverId)) {
+    throw new Error('invite: serverId must be a non-empty well-formed string')
   }
-  if (typeof raw.inviterPubkey !== 'string' || !HEX64.test(raw.inviterPubkey)) {
-    throw new Error('invite: inviterPubkey must be 64 hex chars')
+  if (typeof raw.inviterPubkey !== 'string' || !HEX64_LOWER.test(raw.inviterPubkey)) {
+    throw new Error('invite: inviterPubkey must be 64 lowercase hex chars')
   }
-  if (typeof raw.nonce !== 'string' || !HEX_ANY.test(raw.nonce)) {
-    throw new Error('invite: nonce must be a non-empty even-length hex string')
+  if (typeof raw.nonce !== 'string' || !NONCE_HEX_LOWER.test(raw.nonce)) {
+    throw new Error(`invite: nonce must be at least ${INVITE_NONCE_MIN_BYTES} bytes of lowercase hex`)
   }
-  if (typeof raw.sig !== 'string' || !HEX128.test(raw.sig)) {
-    throw new Error('invite: sig must be 128 hex chars (64-byte Schnorr signature)')
+  if (typeof raw.sig !== 'string' || !HEX128_LOWER.test(raw.sig)) {
+    throw new Error('invite: sig must be 128 lowercase hex chars (64-byte Schnorr signature)')
   }
   let expiresAt: number | undefined
   if (raw.expiresAt !== undefined) {
-    if (typeof raw.expiresAt !== 'number' || !Number.isFinite(raw.expiresAt)) {
-      throw new Error('invite: expiresAt must be a finite number when present')
+    if (!isUnixSeconds(raw.expiresAt)) {
+      throw new Error('invite: expiresAt must be a non-negative safe integer when present')
     }
     expiresAt = raw.expiresAt
   }
 
   const namespace = raw.namespace
   const serverId = raw.serverId
-  const inviterPubkey = raw.inviterPubkey.toLowerCase()
-  const nonce = raw.nonce.toLowerCase()
-  const sig = raw.sig.toLowerCase()
+  const inviterPubkey = raw.inviterPubkey
+  const nonce = raw.nonce
+  const sig = raw.sig
 
   // (4) Recompute the canonical digest from the PARSED fields and verify the Schnorr sig.
   const digest = inviteDigest({ namespace, serverId, inviterPubkey, nonce, expiresAt })
-  if (!schnorr.verify(hexToBytes(sig), digest, hexToBytes(inviterPubkey))) {
-    throw new Error('invite: bad signature')
+  let sigOk = false
+  try {
+    sigOk = schnorr.verify(hexToBytes(sig), digest, hexToBytes(inviterPubkey))
+  } catch {
+    sigOk = false // an off-curve x can throw inside @noble — surface it as a bad signature
   }
+  if (!sigOk) throw new Error('invite: bad signature')
 
   // (5) Expiry (EXCLUSIVE): reject only when the clock is strictly past `expiresAt`.
   const clock = now ?? Math.floor(Date.now() / 1000)
@@ -245,52 +313,94 @@ export function parseJoinInvite(blob: Uint8Array, now?: number): JoinInvite {
     throw new Error('invite: expired')
   }
 
-  const invite: JoinInvite = { v: 1, namespace, serverId, inviterPubkey, nonce, sig }
+  const invite: JoinInvite = { v: INVITE_VERSION, namespace, serverId, inviterPubkey, nonce, sig }
   if (expiresAt !== undefined) invite.expiresAt = expiresAt
   return invite
+}
+
+/** Why `verifyBondAttestation` rejected an event. `revoked` / `expired` / `not-yet-active` /
+ *  `claim-expired` come from the attestation's own lifecycle tags (nostr-attestations `isValid`). */
+export type BondAttestationRejection =
+  | 'bad-signature'
+  | 'wrong-kind'
+  | 'not-kindred-bond'
+  | 'bad-subject'
+  | 'd-tag-mismatch'
+  | 'self-attestation'
+  | 'revoked'
+  | 'expired'
+  | 'not-yet-active'
+  | 'claim-expired'
+
+/** Result of `verifyBondAttestation`. On success both pubkeys are lowercase 64-hex. */
+export interface BondAttestationResult {
+  ok: boolean
+  attesterPubHex?: string
+  subjectPubHex?: string
+  reason?: BondAttestationRejection
 }
 
 /**
  * Verify a SINGLE `kindred-bond` attestation (spec §9.2) — the anti-sybil brick.
  *
  * Checks (in order, fail-fast): (a) the Nostr event signature + id via `verifyEvent`; (b) the kind is
- * 31000 (the kindred-bond addressable attestation kind); (c) a `["type","kindred-bond"]` tag is
- * present (the discriminator nostr-attestations `createAttestation({type:'kindred-bond'})` renders —
- * confirmed by running K-4's `buildBondAttestation`, which emits tags `["d",...]`, `["type",
- * "kindred-bond"]`, `["p",<subject>]`, optional `["summary",...]`, `["L","nip-va"]`, `["l",
- * "kindred-bond","nip-va"]`); (d) a subject `["p",<64-hex>]` tag is present. On success it returns the
- * attester (`event.pubkey` — the signer) and the subject (the `p`-tag value).
+ * 31000; (c) a `["type","kindred-bond"]` tag is present (the discriminator nostr-attestations
+ * `createAttestation({type:'kindred-bond'})` renders); (d) EXACTLY ONE `["p",<64-hex>]` subject tag;
+ * (e) exactly one `d` tag, equal to `kindred-bond:<subject>` (lowercase) — so the event sits at the
+ * address a `buildBondRevocation` overwrites and cannot dodge revocation under a different `d`;
+ * (f) the subject is not the attester (a self-attestation proves nothing); (g) the lifecycle via
+ * nostr-attestations `isValid(event, now)`: a `["status","revoked"]` event, a passed NIP-40
+ * `expiration`, a future `valid_from` or a passed `valid_to` are all rejected.
+ *
+ * (g) only sees the event it is given. A revocation REPLACES the attestation at its address (kind 31000
+ * is addressable), so a consumer must fetch the LATEST event for `(attester, 31000, d)` — an older
+ * non-revoked copy still passes here.
  *
  * This is per-attestation verification ONLY. Counting a member's attestations into a set of DISTINCT
  * verified humans (the collective/guild sybil-resistance of §9.2) is the CONSUMING APP's job — kenspeckle
- * does NO graph traversal and NO counting here (that would breach the §2 non-goals).
+ * does NO graph traversal and NO counting here (that would breach the §2 non-goals). Both returned
+ * pubkeys are lowercased so a distinct-count over them is not fooled by case.
  *
  * @param event An (untrusted) Nostr event, ideally wire-shaped (a fresh JSON object). Note nostr-tools
  *   caches `verifyEvent` in an enumerable `verifiedSymbol` on `finalizeEvent` output; a caller that
  *   passes such an object directly would have `verifyEvent` short-circuit on the stale cache. Pass a
  *   wire-clone (`JSON.parse(JSON.stringify(ev))`) if the event might carry that symbol.
- * @returns `{ ok:true, attesterPubHex, subjectPubHex }` on success; `{ ok:false }` otherwise.
+ * @param now   Optional injected clock (unix seconds) for the lifecycle check. Defaults to the wall clock.
+ * @returns `{ ok:true, attesterPubHex, subjectPubHex }` on success; `{ ok:false, reason }` otherwise.
  */
-export function verifyBondAttestation(event: NostrEvent): {
-  ok: boolean
-  attesterPubHex?: string
-  subjectPubHex?: string
-} {
+export function verifyBondAttestation(event: NostrEvent, now?: number): BondAttestationResult {
   // (a) Real signature + event-id check. (For finalizeEvent output, the caller should wire-clone to
   //     drop the verifiedSymbol cache; otherwise verifyEvent may short-circuit on a stale `true`.)
-  if (!verifyEvent(event)) return { ok: false }
+  if (!verifyEvent(event)) return { ok: false, reason: 'bad-signature' }
 
   // (b) Must be the kindred-bond addressable attestation kind.
-  if (event.kind !== 31000) return { ok: false }
+  if (event.kind !== 31000) return { ok: false, reason: 'wrong-kind' }
 
-  // (c) The kindred-bond discriminator tag (the EXACT shape nostr-attestations emits — verified
-  //     against the real buildBondAttestation output, not guessed).
+  // (c) The kindred-bond discriminator tag (the EXACT shape nostr-attestations emits).
   const typeTag = event.tags.find((t) => t[0] === 'type' && t[1] === 'kindred-bond')
-  if (!typeTag) return { ok: false }
+  if (!typeTag) return { ok: false, reason: 'not-kindred-bond' }
 
-  // (d) The subject p-tag (the pubkey the attester is asserting a bond with). Must be 64-hex.
-  const pTag = event.tags.find((t) => t[0] === 'p' && typeof t[1] === 'string' && HEX64.test(t[1]))
-  if (!pTag || typeof pTag[1] !== 'string') return { ok: false }
+  // (d) Exactly one subject p-tag, 64-hex. Lowercased so the caller's distinct-count is case-proof.
+  const pTags = event.tags.filter((t) => t[0] === 'p')
+  const subjectRaw = pTags.length === 1 ? pTags[0]?.[1] : undefined
+  if (typeof subjectRaw !== 'string' || !HEX64.test(subjectRaw)) return { ok: false, reason: 'bad-subject' }
+  const subject = subjectRaw.toLowerCase()
 
-  return { ok: true, attesterPubHex: event.pubkey, subjectPubHex: pTag[1] }
+  // (e) The addressable slot must be the one a revocation for this subject targets.
+  const dTags = event.tags.filter((t) => t[0] === 'd')
+  if (dTags.length !== 1 || dTags[0]?.[1] !== `kindred-bond:${subject}`) {
+    return { ok: false, reason: 'd-tag-mismatch' }
+  }
+
+  // (f) verifyEvent has already required a 64-hex pubkey; lowercase for the same case-proofing.
+  const attester = event.pubkey.toLowerCase()
+  if (attester === subject) return { ok: false, reason: 'self-attestation' }
+
+  // (g) Lifecycle: revoked / expired / not yet active / claim window passed.
+  const validity = isValid(event, now)
+  if (!validity.valid) {
+    return { ok: false, reason: (validity.reason ?? 'revoked') as BondAttestationRejection }
+  }
+
+  return { ok: true, attesterPubHex: attester, subjectPubHex: subject }
 }

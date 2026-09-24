@@ -1,0 +1,89 @@
+{
+  "description": "JoinInvite v2 golden vector for @forgesworn/kenspeckle ./invite. digest = sha256(utf8(JSON.stringify([\"kenspeckle-invite\", 2, namespace, serverId, inviterPubkey, nonce, expiresAt ?? null]))); sig = BIP-340 schnorr over digest. `auxRand` is the BIP-340 auxiliary randomness used to freeze `sig` (the library signs with fresh aux randomness, so its own sigs differ but must verify). `negatives` must all be rejected by parseJoinInvite with an error containing `error`.",
+  "privkey": "3333333333333333333333333333333333333333333333333333333333333333",
+  "inviterPubkey": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+  "auxRand": "0000000000000000000000000000000000000000000000000000000000000000",
+  "now": 1700000000,
+  "cases": [
+    {
+      "name": "colon-bearing serverId with expiry",
+      "fields": {
+        "namespace": "game",
+        "serverId": "eu:prod",
+        "nonce": "00112233445566778899aabbccddeeff",
+        "expiresAt": 1700003600
+      },
+      "canonical": "[\"kenspeckle-invite\",2,\"game\",\"eu:prod\",\"3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1\",\"00112233445566778899aabbccddeeff\",1700003600]",
+      "digest": "c17a961ee6f957f2487c28be60527f9e6de1541c95ea58277a3f268c9effbd54",
+      "sig": "d8cafc6ad227e8600d87d7d558ee86ee205b95a91ba4d4b26e5c001bbb775ca9c25f83a0577258272971c87b6876ca81338a05b71303fc64e8cff972980e007d",
+      "wire": "{\"v\":2,\"namespace\":\"game\",\"serverId\":\"eu:prod\",\"inviterPubkey\":\"3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"sig\":\"d8cafc6ad227e8600d87d7d558ee86ee205b95a91ba4d4b26e5c001bbb775ca9c25f83a0577258272971c87b6876ca81338a05b71303fc64e8cff972980e007d\",\"expiresAt\":1700003600}",
+      "parsed": {
+        "v": 2,
+        "namespace": "game",
+        "serverId": "eu:prod",
+        "inviterPubkey": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+        "nonce": "00112233445566778899aabbccddeeff",
+        "sig": "d8cafc6ad227e8600d87d7d558ee86ee205b95a91ba4d4b26e5c001bbb775ca9c25f83a0577258272971c87b6876ca81338a05b71303fc64e8cff972980e007d",
+        "expiresAt": 1700003600
+      }
+    },
+    {
+      "name": "no expiry encodes null",
+      "fields": {
+        "namespace": "com.example.game",
+        "serverId": "play.example.com",
+        "nonce": "ffeeddccbbaa99887766554433221100"
+      },
+      "canonical": "[\"kenspeckle-invite\",2,\"com.example.game\",\"play.example.com\",\"3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1\",\"ffeeddccbbaa99887766554433221100\",null]",
+      "digest": "7a097993800634ab07912faf1707faa420367ec384c928160fc123f86f181664",
+      "sig": "7bace728e340db5ae64544c1ffd4e68475e7559c3c4c86f6c95d1b65467aad9c3bb1706451547f6130700702f41150594315795d8ee11f8d70b130de3c9456a5",
+      "wire": "{\"v\":2,\"namespace\":\"com.example.game\",\"serverId\":\"play.example.com\",\"inviterPubkey\":\"3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1\",\"nonce\":\"ffeeddccbbaa99887766554433221100\",\"sig\":\"7bace728e340db5ae64544c1ffd4e68475e7559c3c4c86f6c95d1b65467aad9c3bb1706451547f6130700702f41150594315795d8ee11f8d70b130de3c9456a5\"}",
+      "parsed": {
+        "v": 2,
+        "namespace": "com.example.game",
+        "serverId": "play.example.com",
+        "inviterPubkey": "3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1",
+        "nonce": "ffeeddccbbaa99887766554433221100",
+        "sig": "7bace728e340db5ae64544c1ffd4e68475e7559c3c4c86f6c95d1b65467aad9c3bb1706451547f6130700702f41150594315795d8ee11f8d70b130de3c9456a5"
+      }
+    }
+  ],
+  "negatives": [
+    {
+      "name": "cross-field shift: the eu:prod signature replayed as namespace \"game:eu\", serverId \"prod\"",
+      "wire": "{\"v\":2,\"namespace\":\"game:eu\",\"serverId\":\"prod\",\"inviterPubkey\":\"3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"sig\":\"d8cafc6ad227e8600d87d7d558ee86ee205b95a91ba4d4b26e5c001bbb775ca9c25f83a0577258272971c87b6876ca81338a05b71303fc64e8cff972980e007d\",\"expiresAt\":1700003600}",
+      "error": "bad signature"
+    },
+    {
+      "name": "v1 is not accepted",
+      "wire": "{\"v\":1,\"namespace\":\"game\",\"serverId\":\"eu:prod\",\"inviterPubkey\":\"3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"sig\":\"d8cafc6ad227e8600d87d7d558ee86ee205b95a91ba4d4b26e5c001bbb775ca9c25f83a0577258272971c87b6876ca81338a05b71303fc64e8cff972980e007d\",\"expiresAt\":1700003600}",
+      "error": "unsupported version"
+    },
+    {
+      "name": "lone surrogate in serverId",
+      "wire": "{\"v\":2,\"namespace\":\"game\",\"serverId\":\"\\ud800\",\"inviterPubkey\":\"3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"sig\":\"d8cafc6ad227e8600d87d7d558ee86ee205b95a91ba4d4b26e5c001bbb775ca9c25f83a0577258272971c87b6876ca81338a05b71303fc64e8cff972980e007d\",\"expiresAt\":1700003600}",
+      "error": "serverId"
+    },
+    {
+      "name": "nonce shorter than 16 bytes",
+      "wire": "{\"v\":2,\"namespace\":\"game\",\"serverId\":\"eu:prod\",\"inviterPubkey\":\"3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1\",\"nonce\":\"0011223344556677\",\"sig\":\"d8cafc6ad227e8600d87d7d558ee86ee205b95a91ba4d4b26e5c001bbb775ca9c25f83a0577258272971c87b6876ca81338a05b71303fc64e8cff972980e007d\",\"expiresAt\":1700003600}",
+      "error": "nonce"
+    },
+    {
+      "name": "uppercase sig spelling",
+      "wire": "{\"v\":2,\"namespace\":\"game\",\"serverId\":\"eu:prod\",\"inviterPubkey\":\"3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"sig\":\"D8CAFC6AD227E8600D87D7D558EE86EE205B95A91BA4D4B26E5C001BBB775CA9C25F83A0577258272971C87B6876CA81338A05B71303FC64E8CFF972980E007D\",\"expiresAt\":1700003600}",
+      "error": "sig"
+    },
+    {
+      "name": "fractional expiresAt",
+      "wire": "{\"v\":2,\"namespace\":\"game\",\"serverId\":\"eu:prod\",\"inviterPubkey\":\"3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"sig\":\"d8cafc6ad227e8600d87d7d558ee86ee205b95a91ba4d4b26e5c001bbb775ca9c25f83a0577258272971c87b6876ca81338a05b71303fc64e8cff972980e007d\",\"expiresAt\":1700003600.5}",
+      "error": "expiresAt"
+    },
+    {
+      "name": "expired (now > expiresAt)",
+      "wire": "{\"v\":2,\"namespace\":\"game\",\"serverId\":\"eu:prod\",\"inviterPubkey\":\"3c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"sig\":\"d8cafc6ad227e8600d87d7d558ee86ee205b95a91ba4d4b26e5c001bbb775ca9c25f83a0577258272971c87b6876ca81338a05b71303fc64e8cff972980e007d\",\"expiresAt\":1700003600}",
+      "now": 1700003601,
+      "error": "expired"
+    }
+  ]
+}
