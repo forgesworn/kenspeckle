@@ -403,6 +403,18 @@ Addressable event, `kind 30444`:
 | `["keyed", "0"\|"1"]` | whether the pool is keyed (salted) |
 | `content` | **base64 of the raw @forgesworn/tessera-kit `KFLT` blob** |
 
+**`namespace` MUST be colon-free — a colon makes the context AMBIGUOUS, not merely hard to
+parse.** `(namespace: 'a', serverId: 'b:c')` and `(namespace: 'a:b', serverId: 'c')` would
+otherwise both produce the IDENTICAL context/d-tag string `kindred:members:a:b:c` — two
+different deployments a signer could sign for would collide onto the same context, defeating
+the substitution defence `context` binding exists to provide (§5.3 below has the full
+byte-boundary reasoning). `serverId` MAY contain colons — it is always the unambiguous
+remainder after `namespace`'s own colon-free segment. `filterSignatureContext(namespace,
+serverId)` and `buildFilterPublication` both **throw** if `namespace` contains a colon;
+`parseFilterPublicationResult`/`parseFilterPublication` report `opts.namespace` containing a
+colon as `'invalid-opts'` (never a throw), checked **before** any comparison against the
+event itself.
+
 **Signature CONTEXT binding (@forgesworn/tessera-kit 0.2.0, BREAKING).** Every filter-blob
 signature is now bound to a caller-supplied `context` string (@forgesworn/tessera-kit
 PROTOCOL.md §4.1/§4.3/§6) — a wrong context fails exactly like a bad or absent
@@ -428,9 +440,16 @@ minEpoch?: number; requireAuthorIsSigner?: boolean }` (previously optional, with
 CHANGELOG). `context` is built **only** from `opts.namespace`/`opts.serverId`, per
 the warning above. `parseFilterPublication` returns `null` (never throws) on any
 failure, in order:
-(1) `opts.namespace`/`opts.serverId` missing or not a non-empty string (a
-caller-configuration error, reported as a rejection, never a throw); (2) bad
-Nostr event signature (`verifyEvent`); (3) wrong kind; (4) missing/undecodable
+(1) `opts` itself is invalid — `opts.namespace`/`opts.serverId` missing or not a
+non-empty string, `opts.namespace` contains a colon (the ambiguity above), or
+`opts.minEpoch` is given but not a finite non-negative integer (a `NaN`,
+negative, or fractional `minEpoch` would otherwise silently **disable** check
+(10)'s rollback comparison rather than erroring) — a caller-configuration
+error, reported as a rejection, never a throw, and checked **before** anything
+about `event` is even looked at; (2) the event's own shape is invalid
+(`null`/`undefined`/non-object — `verifyEvent` itself would **throw** a raw
+`TypeError` on this, guarded against here) or its Nostr event signature is
+invalid (`verifyEvent`); (3) wrong kind; (4) missing/undecodable
 base64 content, or a blob over @forgesworn/tessera-kit's 64 MiB cap (the encoded length is
 capped **before** decode so an oversized payload can't be expanded into memory);
 (5) the event's `d`-tag does not **exactly** equal
@@ -481,12 +500,27 @@ throws a clear kenspeckle error if it does not verify — catching a blob signed
 the wrong deployment **before** it is ever published, rather than leaving every
 consumer to discover the mismatch independently.
 
-### 5.3 serverId-with-colons in the d-tag
+### 5.3 serverId-with-colons in the d-tag; namespace MUST be colon-free
 
-The d-tag is `kindred:members:<namespace>:<serverId>`; the namespace is the segment
-up to the **next** colon, and the serverId is the rest. So a `serverId` may itself
-contain colons (e.g. a `wss://host:port/path` URL) — the parser splits only on the
-first colon after the prefix and takes the remainder verbatim.
+The d-tag / context is `kindred:members:<namespace>:<serverId>`. **As of 0.2.0, this is
+constructed, never parsed:** `parseFilterPublicationResult` does not split the d-tag to
+recover `namespace`/`serverId` — `opts.namespace`/`opts.serverId` (the caller's own,
+out-of-band-known address) are the sole source of truth for them, and the d-tag is only
+ever compared, byte-exact, against `filterSignatureContext(opts.namespace,
+opts.serverId)`.
+
+This is precisely why `namespace` **MUST be colon-free**: with no parser splitting on
+"the first colon after the prefix," a colon inside `namespace` doesn't just risk
+misparsing — it makes the resulting context **genuinely ambiguous**.
+`(namespace: 'a', serverId: 'b:c')` and `(namespace: 'a:b', serverId: 'c')` build the
+IDENTICAL string `kindred:members:a:b:c`, so a signer could sign one blob under this one
+context string and have it verify as either pair — undermining the very
+cross-deployment distinction `context` binding (§4.1/§4.3) exists to provide.
+`filterSignatureContext`/`buildFilterPublication` throw on a colon in `namespace`;
+`parseFilterPublicationResult`/`parseFilterPublication` report it as `'invalid-opts'`
+(§5.2). `serverId` MAY contain colons (e.g. a `wss://host:port/path` URL) — it is
+always the unambiguous remainder after `namespace`'s own colon-free segment, and no
+ambiguity arises from a colon inside it (`namespace` alone determines the boundary).
 
 ### 5.4 Opt-out request (`buildOptOutRequest`)
 

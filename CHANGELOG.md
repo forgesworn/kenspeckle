@@ -61,10 +61,30 @@ this section, and the individually marked entries in the sections after it.
   doesn't verify, catching a wrong-context blob before it is ever published.
   `discoverPresent` now also throws on an EMPTY-STRING `saltHex` for a KEYED
   filter (tessera-kit 0.2.0 rejects an empty salt outright — see tessera-kit
-  CHANGELOG [0.2.0]). **Migrate:** pass `{ namespace, serverId }` at every
+  CHANGELOG [0.2.0]).
+  **Review-fix additions:** `namespace` MUST be colon-free — a colon makes the
+  context genuinely AMBIGUOUS, not just hard to parse: `(namespace:'a',
+  serverId:'b:c')` and `(namespace:'a:b', serverId:'c')` would otherwise both
+  build the identical context/d-tag `kindred:members:a:b:c`.
+  `filterSignatureContext`/`buildFilterPublication` throw on a colon in
+  `namespace`; `parseFilterPublicationResult` reports it as `'invalid-opts'`,
+  checked before any comparison against the event. `opts.minEpoch`, if given,
+  must now be a finite non-negative integer (also `'invalid-opts'`
+  otherwise) — a `NaN`/negative/fractional `minEpoch` previously would have
+  silently disabled the rollback check rather than erroring, since
+  `signedEpoch <= NaN` is always `false`. `parseFilterPublicationResult`/
+  `parseFilterPublication` also now guard the `event` argument's own shape
+  before calling `verifyEvent` (which itself throws a raw `TypeError` on
+  `null`/`undefined`/a non-object `event`) — folded into the `'bad-signature'`
+  rejection, preserving the never-throws contract. `opts` is now validated in
+  full — including the colon and `minEpoch` checks above — strictly before any
+  check that depends on `event`, so a bad `opts` is never reported as
+  `'address-mismatch'` or any other event-dependent code.
+  **Migrate:** pass `{ namespace, serverId }` at every
   `parseFilterPublication`/`parseFilterPublicationResult` call site; re-sign
   every stored filter blob with `signFilterBlob(unsigned, priv, context)`
-  using the new required `context` argument.
+  using the new required `context` argument; ensure `namespace` never
+  contains a colon.
 - **`@forgesworn/tessera-kit` is temporarily a `file:../tessera-kit` dependency**
   (was a pinned `git+https://…` dependency), tracking tessera-kit 0.2.0 ahead of
   its npm release. This only resolves in a checkout with `tessera-kit` cloned as
