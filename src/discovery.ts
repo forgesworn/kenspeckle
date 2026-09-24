@@ -4,9 +4,11 @@
 // Spec: signet-plans/docs/plans/2026-06-02-kenspeckle-primitive-spec.md §8 (discovery) + §11 (opt-out).
 // Publication shape matches tessera-kit PROTOCOL.md §6 byte-for-byte (kind 30444, d-tag
 // `kindred:members:<namespace>:<serverId>`, indexable `['n', namespace]` tag, base64-of-KFLT-blob
-// content). The `namespace` is reverse-DNS-style and MUST be colon-free (the d-tag splits on the
-// first colon after the prefix to recover `<namespace>` vs `<serverId>`); `serverId` MAY contain
-// colons (it is the remainder). The Nostr event signature (NIP-01) and the in-blob Schnorr provenance
+// content). The `namespace` is reverse-DNS-style and MUST be colon-free — a colon would make the
+// signature `context` (see below) AMBIGUOUS: (namespace 'a', serverId 'b:c') and (namespace 'a:b',
+// serverId 'c') would otherwise both produce the identical context/d-tag `kindred:members:a:b:c`.
+// `serverId` MAY contain colons — it is always the unambiguous remainder after `namespace`'s own
+// colon-free segment. The Nostr event signature (NIP-01) and the in-blob Schnorr provenance
 // signature (§4) are DISTINCT; `parseFilterPublication` verifies BOTH before returning anything
 // trustable. The base64 publication mechanics are delegated to tessera-kit's generic `./nostr`
 // builder/decoder so the wire-format lives in ONE place (kenspeckle supplies only its kind + tags).
@@ -72,6 +74,18 @@ function dTagValue(namespace: string, serverId: string): string {
   return `${D_TAG_PREFIX}${namespace}:${serverId}`
 }
 
+/** A lone (unpaired) UTF-16 surrogate: a high surrogate NOT followed by a low surrogate, or a low
+ *  surrogate NOT preceded by a high surrogate. tessera-kit rejects a `context` containing one
+ *  (PROTOCOL.md §4.1, shared with `serverId`'s §5.3 check via its own `src/text.ts`) — reimplemented
+ *  here so `parseFilterPublicationResult` can validate `context` itself, upfront, as part of `opts`
+ *  validation (never relying on catching a thrown `TesseraError` for this), since that isn't part of
+ *  tessera-kit's exported public API. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+
+function isWellFormedContext(context: string): boolean {
+  return context.length > 0 && !LONE_SURROGATE.test(context) && new TextEncoder().encode(context).byteLength <= 1024
+}
+
 /**
  * The kindred convention's filter-signature CONTEXT string (tessera-kit PROTOCOL.md §4.1/§4.3/§6,
  * CHANGELOG [0.2.0]) — identical to the d-tag value, `kindred:members:<namespace>:<serverId>`.
@@ -88,8 +102,19 @@ function dTagValue(namespace: string, serverId: string): string {
  * prior knowledge of what it asked for) and separately check the event's OWN d-tag matches it
  * (`FilterPublicationRejection`'s `'address-mismatch'`), rather than trusting the tag as the context
  * source.
+ *
+ * **`namespace` MUST be colon-free — a colon makes the context AMBIGUOUS, not just hard to parse.**
+ * `(namespace: 'a', serverId: 'b:c')` and `(namespace: 'a:b', serverId: 'c')` would otherwise both
+ * produce the identical context string `kindred:members:a:b:c`: two DIFFERENT deployments a signer
+ * could sign for would collide onto the SAME context, defeating the very substitution defence
+ * `context` binding exists to provide. `serverId` MAY contain colons — it is always the unambiguous
+ * remainder after `namespace`'s own colon-free segment (e.g. a `wss://host:port/path` URL). THROWS if
+ * `namespace` contains a colon.
  */
 export function filterSignatureContext(namespace: string, serverId: string): string {
+  if (typeof namespace === 'string' && namespace.includes(':')) {
+    throw new Error('filterSignatureContext: namespace must not contain a colon (it would make the context ambiguous)')
+  }
   return dTagValue(namespace, serverId)
 }
 
@@ -199,11 +224,11 @@ export function disclosureFor(f: MembershipFilter): DiscoveryDisclosure {
  *
  * - d-tag `kindred:members:<namespace>:<serverId>` is the addressable identity (one filter per
  *   `(namespace, serverId)`; a newer epoch replaces the older addressable event). `namespace` is
- *   reverse-DNS-style and MUST be **colon-free** — a colon would shift the `<namespace>:<serverId>`
- *   boundary `parseFilterPublication` splits on (the first colon after the prefix), mis-parsing the
- *   two fields. (serverId MAY contain colons — it is the unambiguous remainder, e.g. a
- *   `wss://host:port/path` URL.) tessera-kit's capability already guards its own serverId this way;
- *   this mirrors it for kenspeckle's namespace.
+ *   reverse-DNS-style and MUST be **colon-free** — a colon would make the context AMBIGUOUS (see
+ *   `filterSignatureContext`'s doc comment for why: two DIFFERENT `(namespace, serverId)` pairs could
+ *   otherwise collide onto the identical context/d-tag string). `serverId` MAY contain colons — it is
+ *   the unambiguous remainder, e.g. a `wss://host:port/path` URL. tessera-kit's capability already
+ *   guards its own serverId this way; this mirrors it for kenspeckle's namespace.
  * - `['n', namespace]` is the single-letter relay-indexable tag the aggregator queries (`#n`).
  *
  * The base64-of-blob CONTENT and `EventTemplate` assembly are delegated to tessera-kit's generic
@@ -216,6 +241,8 @@ export function disclosureFor(f: MembershipFilter): DiscoveryDisclosure {
  * clear kenspeckle error if it doesn't verify, so a blob signed for the wrong context (a different
  * server/namespace, or an unsigned blob) is caught here, before ever publishing it, rather than
  * silently shipping an event no consumer's `parseFilterPublicationResult` will ever accept.
+ *
+ * THROWS on an empty `namespace` or `serverId`, or a `namespace` containing a colon.
  */
 export function buildFilterPublication(p: {
   namespace: string
@@ -224,9 +251,17 @@ export function buildFilterPublication(p: {
   keyed: boolean
   epoch: number
 }): EventTemplate {
-  // d-tag misparse guard: a colon in the namespace would corrupt the addressable identity boundary.
+  if (p.namespace.length === 0) {
+    throw new Error('buildFilterPublication: namespace must not be empty')
+  }
+  // d-tag/context ambiguity guard: a colon in the namespace makes the context ambiguous (see
+  // `filterSignatureContext`'s doc comment) — `filterSignatureContext` below would itself throw for
+  // this, but the check is repeated here so the error names THIS function, not an internal helper.
   if (p.namespace.includes(':')) {
-    throw new Error('buildFilterPublication: namespace must not contain a colon')
+    throw new Error('buildFilterPublication: namespace must not contain a colon (it would make the context ambiguous)')
+  }
+  if (p.serverId.length === 0) {
+    throw new Error('buildFilterPublication: serverId must not be empty')
   }
   const context = filterSignatureContext(p.namespace, p.serverId)
   const { ok } = verifyFilterBlob(p.blob, context)
@@ -268,7 +303,10 @@ export interface FilterPublication {
  *  signature check (tessera-kit PROTOCOL.md §4.1/§4.3) MUST be built from the `(namespace, serverId)`
  *  the verifier itself chose to fetch, NEVER from the received event's own `d`-tag — see
  *  `filterSignatureContext`'s doc comment for why. Passing `opts` used to be optional (both fields
- *  defaulted to being read off the event); it no longer is. */
+ *  defaulted to being read off the event); it no longer is. `namespace` MUST be colon-free (a colon
+ *  makes the context ambiguous — see `filterSignatureContext`); `minEpoch`, if given, MUST be a
+ *  finite non-negative integer. Any of these being wrong is reported as `'invalid-opts'`, never a
+ *  throw. */
 export interface ParseFilterPublicationOpts {
   namespace: string
   serverId: string
@@ -279,10 +317,21 @@ export interface ParseFilterPublicationOpts {
 /** Why `parseFilterPublicationResult` rejected an event — one code per internal `return { ok: false }`
  *  path, in the SAME order `parseFilterPublication`'s doc comment numbers its checks:
  *   1. `invalid-opts`              — `opts.namespace`/`opts.serverId` is missing, not a non-empty
- *                                    string, or (rare) produces a `context` tessera-kit itself rejects
- *                                    as malformed (not well-formed UTF-16, or over 1024 UTF-8 bytes).
- *                                    A caller-configuration problem, but this function never throws.
- *   2. `bad-signature`             — the Nostr event signature is invalid (`verifyEvent`).
+ *                                    string, or `opts.namespace` contains a colon (which would make
+ *                                    `context` ambiguous — see `filterSignatureContext`'s doc
+ *                                    comment); `opts.minEpoch` is given but not a finite non-negative
+ *                                    integer (a `NaN`/negative/fractional `minEpoch` would otherwise
+ *                                    silently DISABLE the step-14 rollback check rather than erroring);
+ *                                    or (rare, since the checks above already rule most of this out)
+ *                                    the resulting `context` is itself malformed (not well-formed
+ *                                    UTF-16, or over 1024 UTF-8 bytes). A caller-configuration
+ *                                    problem, but this function never throws. Checked FIRST, before
+ *                                    anything about `event` — a bad `opts` never reports as
+ *                                    `'address-mismatch'` or any later code.
+ *   2. `bad-signature`             — the event's own SHAPE is invalid (`event` is `null`/`undefined`
+ *                                    or not an object — a shape `verifyEvent` itself would THROW a raw
+ *                                    `TypeError` on, guarded against here), or its Nostr event
+ *                                    signature is invalid (`verifyEvent`).
  *   3. `wrong-kind`                — `event.kind !== KINDRED_FILTER_KIND`.
  *   4. `bad-content`               — `event.content` is not a string.
  *   5. `bad-blob`                  — the base64 content is undecodable, or the blob exceeds
@@ -367,26 +416,60 @@ export function parseFilterPublicationResult(
   event: NostrEvent,
   opts: ParseFilterPublicationOpts,
 ): FilterPublicationResult {
-  // 1. `opts.namespace`/`opts.serverId` are the caller-chosen address (§4.3's "the address the
-  //    verifier CHOSE to request") that `context` gets built from below — never throw on a
-  //    caller-configuration mistake, report it as a rejection instead.
+  // 1. VALIDATE opts FIRST, entirely — before anything about `event` is even looked at — so a
+  //    caller-configuration mistake always reports as `'invalid-opts'`, never `'address-mismatch'`
+  //    (which is about the EVENT disagreeing with otherwise-valid opts) or any later code. Checked,
+  //    in order (short-circuiting, so a wrong-typed field is never used before its type is confirmed):
+  //      - `opts.namespace` is a non-empty string, and colon-free — a colon would make `context`
+  //        AMBIGUOUS (see `filterSignatureContext`'s doc comment: `('a','b:c')` and `('a:b','c')`
+  //        would otherwise both build the identical context/d-tag);
+  //      - `opts.serverId` is a non-empty string (MAY contain colons — see above);
+  //      - `opts.minEpoch`, if given, is a finite non-negative INTEGER (`Number.isSafeInteger` — a
+  //        `NaN`, `Infinity`, negative, or fractional `minEpoch` would otherwise make the step-14
+  //        rollback comparison `signedEpoch <= opts.minEpoch` silently ALWAYS false — `NaN` in
+  //        particular disables the comparison entirely rather than raising an error — defeating the
+  //        rollback defense exactly the way tessera-kit's own `verifyAndParseFilter` warns a `NaN`
+  //        `minEpoch` would, PROTOCOL.md §4.3);
+  //      - the CONTEXT built from `opts.namespace`/`opts.serverId` is itself well-formed (non-empty,
+  //        no lone UTF-16 surrogate, UTF-8 encoding ≤ 1024 bytes — the same shape tessera-kit's own
+  //        `verifyFilterBlob` would otherwise throw a `TesseraError` for, checked here proactively so
+  //        that throw is never reachable in practice — see `CONTEXT_ERROR_CODES` below, kept as
+  //        defense-in-depth only).
   if (
     opts === null ||
     typeof opts !== 'object' ||
     typeof opts.namespace !== 'string' ||
     opts.namespace.length === 0 ||
+    opts.namespace.includes(':') ||
     typeof opts.serverId !== 'string' ||
-    opts.serverId.length === 0
+    opts.serverId.length === 0 ||
+    (opts.minEpoch !== undefined && !(Number.isSafeInteger(opts.minEpoch) && opts.minEpoch >= 0)) ||
+    !isWellFormedContext(dTagValue(opts.namespace, opts.serverId))
   ) {
     return { ok: false, reason: 'invalid-opts' }
   }
+  // Built ONLY from `opts` — the (namespace, serverId) the CALLER asked for — NEVER from the event's
+  // own `d`-tag (tessera-kit 0.2.0, PROTOCOL.md §4.3/§6; see `filterSignatureContext`'s doc comment
+  // for the substitution attack this closes). `opts.namespace` is already known colon-free above, so
+  // this can never throw.
+  const context = filterSignatureContext(opts.namespace, opts.serverId)
 
-  // 2. Nostr event signature (transport integrity).
+  // 2. Guard the event's own SHAPE before ever calling into nostr-tools' `verifyEvent`. `verifyEvent`
+  //    assumes `event` is at least an object — it unconditionally reads/writes a caching `Symbol`
+  //    property on it — and THROWS a raw (uncaught) `TypeError` for `null`/`undefined` (reading that
+  //    property) or any other primitive (string, number, boolean, bigint, symbol — WRITING that
+  //    property throws in strict-mode ES modules). An `event` this malformed has no meaningful
+  //    signature to speak of, so it folds into the SAME `'bad-signature'` rejection a well-typed-but-
+  //    wrong-signature `event` gets from `verifyEvent` returning `false` — never a throw.
+  if (event === null || typeof event !== 'object') {
+    return { ok: false, reason: 'bad-signature' }
+  }
+  // 3. Nostr event signature (transport integrity).
   if (!verifyEvent(event)) return { ok: false, reason: 'bad-signature' }
-  // 3. Correct kind.
+  // 4. Correct kind.
   if (event.kind !== KINDRED_FILTER_KIND) return { ok: false, reason: 'wrong-kind' }
 
-  // 4. Decode the blob from base64 content, delegated to tessera-kit's `./nostr` helper. It caps the
+  // 5. Decode the blob from base64 content, delegated to tessera-kit's `./nostr` helper. It caps the
   //    ENCODED length BEFORE decoding (so an oversized payload can't be expanded into memory),
   //    decodes, and re-asserts the decoded length — throwing on a non-string, an over-length, or
   //    malformed base64. We catch → a reason to keep this function's never-throws contract. Identical
@@ -398,11 +481,6 @@ export function parseFilterPublicationResult(
   } catch {
     return { ok: false, reason: 'bad-blob' }
   }
-
-  // 5. THE CONTEXT (tessera-kit 0.2.0, PROTOCOL.md §4.3/§6). Built ONLY from `opts` — the
-  //    (namespace, serverId) the CALLER asked for — NEVER from the event's own `d`-tag (see
-  //    `filterSignatureContext`'s doc comment for the substitution attack this closes).
-  const context = filterSignatureContext(opts.namespace, opts.serverId)
 
   // 6. ADDRESS BINDING — kenspeckle's own check, separate from and prior to the blob signature: the
   //    event's `d`-tag must EXACTLY equal the address we asked for. This does not itself provide the
@@ -424,11 +502,11 @@ export function parseFilterPublicationResult(
   // 8. In-blob Schnorr provenance signature, bound to `context` (§10 invariant, extended in 0.2.0
   //    with the mandatory context binding — closes cross-server/namespace filter substitution
   //    cryptographically). `verifyFilterBlob` throws a `TesseraError` only if `context` ITSELF is
-  //    malformed (empty / not well-formed UTF-16 / over 1024 UTF-8 bytes) — unreachable in practice
-  //    here since `opts.namespace`/`opts.serverId` were already checked non-empty strings in step 1,
-  //    but mapped defensively to `'invalid-opts'` (never on `.message` — see `CONTEXT_ERROR_CODES`)
-  //    rather than allowed to escape this never-throws function. Any other unexpected throw is
-  //    mapped to `'bad-blob-signature'`, the closest existing code.
+  //    malformed (empty / not well-formed UTF-16 / over 1024 UTF-8 bytes) — already RULED OUT by
+  //    step 1's `isWellFormedContext` check, so this catch is defense-in-depth only, not a path any
+  //    test can currently reach; mapped defensively to `'invalid-opts'` (never on `.message` — see
+  //    `CONTEXT_ERROR_CODES`) rather than allowed to escape this never-throws function. Any other
+  //    unexpected throw is mapped to `'bad-blob-signature'`, the closest existing code.
   let sigCheck: { signerPubkeyHex: string; ok: boolean }
   try {
     sigCheck = verifyFilterBlob(blob, context)
@@ -484,6 +562,8 @@ export function parseFilterPublicationResult(
   }
 
   // 12. Epoch monotonicity (replay/rollback defense) — against the blob's SIGNED epoch, never the tag.
+  //     `opts.minEpoch` was already validated (step 1) to be a finite non-negative integer when
+  //     given, so a `NaN`/malformed `minEpoch` can never silently disable this comparison.
   if (opts.minEpoch !== undefined && signedEpoch <= opts.minEpoch) {
     return { ok: false, reason: 'stale-epoch' }
   }
@@ -503,8 +583,12 @@ export function parseFilterPublicationResult(
 
 /**
  * Parse + verify a filter publication. Returns `null` (never throws) on ANY failure, in order:
- *   1. `opts.namespace`/`opts.serverId` is missing or not a non-empty string;
- *   2. the Nostr event signature is invalid (`verifyEvent`);
+ *   1. `opts` itself is invalid — `opts.namespace`/`opts.serverId` missing, not a non-empty string,
+ *      or `opts.namespace` contains a colon (ambiguous context — see `filterSignatureContext`); or
+ *      `opts.minEpoch` is given but not a finite non-negative integer. Checked BEFORE anything about
+ *      `event`, so a bad `opts` is never mistaken for a later failure;
+ *   2. the event's own shape is invalid (`null`/`undefined`/non-object — `verifyEvent` itself would
+ *      THROW on this, guarded against here), or its Nostr event signature is invalid (`verifyEvent`);
  *   3. the kind is not `KINDRED_FILTER_KIND`;
  *   4. the base64 content is missing/undecodable, or the blob exceeds tessera-kit's 64 MiB cap;
  *   5. the event's `d`-tag does not exactly equal `filterSignatureContext(opts.namespace,

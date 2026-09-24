@@ -406,6 +406,17 @@ describe('filter publication — build → sign → parse round-trip', () => {
       buildFilterPublication({ namespace: NAMESPACE, serverId: 'serverA', blob: blobForA, keyed: false, epoch: 10 }),
     ).not.toThrow()
   })
+
+  it('buildFilterPublication REJECTS an empty namespace or serverId', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 1)
+    expect(() =>
+      buildFilterPublication({ namespace: '', serverId: SERVER_ID, blob, keyed: false, epoch: 1 }),
+    ).toThrow(/namespace must not be empty/i)
+    expect(() =>
+      buildFilterPublication({ namespace: NAMESPACE, serverId: '', blob, keyed: false, epoch: 1 }),
+    ).toThrow(/serverId must not be empty/i)
+  })
 })
 
 // --- parseFilterPublication rejection paths (returns null, never throws) --------------------------
@@ -781,6 +792,39 @@ describe('parseFilterPublication — context binding (tessera-kit 0.2.0)', () =>
     const signed = fromWire(finalizeEvent(bad, server.sk))
     expect(parseFilterPublication(signed, { namespace: NAMESPACE, serverId: SERVER_ID })).toBeNull()
   })
+
+  it('a genuine publication for server B, parsed with opts asking about server A, is rejected with address-mismatch', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 1, undefined, filterSignatureContext(NAMESPACE, 'serverB'))
+    const template = buildFilterPublication({ namespace: NAMESPACE, serverId: 'serverB', blob, keyed: false, epoch: 1 })
+    // A genuine, fully self-consistent publication for server B (correct context, correct d-tag/n-tag,
+    // signed by the server's own key).
+    const signed = fromWire(finalizeEvent(template, server.sk))
+    // A consumer asking about a DIFFERENT server (A) must reject it — the d-tag says B, opts asks for
+    // A, so `context` (built only from opts) never matches this event's own address.
+    expect(parseFilterPublicationResult(signed, { namespace: NAMESPACE, serverId: 'serverA' })).toEqual({
+      ok: false,
+      reason: 'address-mismatch',
+    })
+  })
+
+  it('a colon in namespace would make the context AMBIGUOUS — opts.namespace containing one is rejected outright as invalid-opts, never reaching the address comparison', () => {
+    // Without the namespace/colon guard, (namespace:'a', serverId:'b:c') and (namespace:'a:b',
+    // serverId:'c') would both build the IDENTICAL context/d-tag string 'kindred:members:a:b:c'.
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 1, undefined, filterSignatureContext('a', 'b:c'))
+    const template = buildFilterPublication({ namespace: 'a', serverId: 'b:c', blob, keyed: false, epoch: 1 })
+    const signed = fromWire(finalizeEvent(template, server.sk))
+    // Sanity: this genuinely verifies for its OWN (namespace, serverId).
+    expect(parseFilterPublicationResult(signed, { namespace: 'a', serverId: 'b:c' }).ok).toBe(true)
+    // The probe: parsed with the colliding split ('a:b', 'c') — which would build the SAME context
+    // string if namespace colons were allowed — is rejected as invalid-opts, before ever comparing
+    // against the event's address. requireAuthorIsSigner:false rules out that (unrelated) guard as
+    // the cause of the rejection.
+    expect(
+      parseFilterPublicationResult(signed, { namespace: 'a:b', serverId: 'c', requireAuthorIsSigner: false }),
+    ).toEqual({ ok: false, reason: 'invalid-opts' })
+  })
 })
 
 // --- parseFilterPublicationResult — one reason code per parseFilterPublication rejection path -------
@@ -819,6 +863,48 @@ describe('parseFilterPublicationResult — reason codes', () => {
     const signed = fromWire(finalizeEvent(template, server.sk))
     expect(
       parseFilterPublicationResult(signed, { namespace: NAMESPACE } as unknown as { namespace: string; serverId: string }),
+    ).toEqual({ ok: false, reason: 'invalid-opts' })
+  })
+
+  it('invalid-opts: opts.namespace contains a colon (ambiguous context)', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 100)
+    const template = buildFilterPublication({ namespace: NAMESPACE, serverId: SERVER_ID, blob, keyed: false, epoch: 100 })
+    const signed = fromWire(finalizeEvent(template, server.sk))
+    expect(parseFilterPublicationResult(signed, { namespace: 'com:evil', serverId: SERVER_ID })).toEqual({
+      ok: false,
+      reason: 'invalid-opts',
+    })
+  })
+
+  it('invalid-opts: opts.minEpoch is NaN — a NaN minEpoch must NOT silently disable the rollback check', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 100)
+    const template = buildFilterPublication({ namespace: NAMESPACE, serverId: SERVER_ID, blob, keyed: false, epoch: 100 })
+    const signed = fromWire(finalizeEvent(template, server.sk))
+    // `signedEpoch <= NaN` is always false in plain JS, so an unvalidated NaN minEpoch would silently
+    // ACCEPT every epoch instead of erroring — exactly the footgun this guard closes.
+    expect(parseFilterPublicationResult(signed, { namespace: NAMESPACE, serverId: SERVER_ID, minEpoch: NaN })).toEqual({
+      ok: false,
+      reason: 'invalid-opts',
+    })
+  })
+
+  it('invalid-opts: opts.minEpoch is negative, or not an integer', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 100)
+    const template = buildFilterPublication({ namespace: NAMESPACE, serverId: SERVER_ID, blob, keyed: false, epoch: 100 })
+    const signed = fromWire(finalizeEvent(template, server.sk))
+    expect(parseFilterPublicationResult(signed, { namespace: NAMESPACE, serverId: SERVER_ID, minEpoch: -1 })).toEqual({
+      ok: false,
+      reason: 'invalid-opts',
+    })
+    expect(parseFilterPublicationResult(signed, { namespace: NAMESPACE, serverId: SERVER_ID, minEpoch: 1.5 })).toEqual({
+      ok: false,
+      reason: 'invalid-opts',
+    })
+    expect(
+      parseFilterPublicationResult(signed, { namespace: NAMESPACE, serverId: SERVER_ID, minEpoch: Infinity }),
     ).toEqual({ ok: false, reason: 'invalid-opts' })
   })
 
@@ -1017,6 +1103,47 @@ describe('parseFilterPublicationResult — reason codes', () => {
   })
 })
 
+// --- parseFilterPublicationResult — the event's own shape can never crash it -----------------------
+//
+// nostr-tools' `verifyEvent` assumes `event` is at least an object (it caches its verdict in a
+// `Symbol` property on it) and THROWS a raw `TypeError` for `null`/`undefined` (reading that
+// property) or any other primitive like a bare string (WRITING that property throws in strict mode).
+// `parseFilterPublicationResult` guards this itself before ever calling `verifyEvent`, so a hostile
+// or simply malformed `event` argument is always a rejection, never an uncaught exception.
+describe('parseFilterPublicationResult — never throws on a malformed event argument', () => {
+  const opts = { namespace: NAMESPACE, serverId: SERVER_ID }
+
+  it('rejects a null event', () => {
+    expect(() => parseFilterPublicationResult(null as unknown as NostrEvent, opts)).not.toThrow()
+    expect(parseFilterPublicationResult(null as unknown as NostrEvent, opts)).toEqual({
+      ok: false,
+      reason: 'bad-signature',
+    })
+  })
+
+  it('rejects a bare string event', () => {
+    expect(() => parseFilterPublicationResult('not an event' as unknown as NostrEvent, opts)).not.toThrow()
+    expect(parseFilterPublicationResult('not an event' as unknown as NostrEvent, opts)).toEqual({
+      ok: false,
+      reason: 'bad-signature',
+    })
+  })
+
+  it('rejects an empty object event', () => {
+    expect(() => parseFilterPublicationResult({} as unknown as NostrEvent, opts)).not.toThrow()
+    expect(parseFilterPublicationResult({} as unknown as NostrEvent, opts)).toEqual({
+      ok: false,
+      reason: 'bad-signature',
+    })
+  })
+
+  it('parseFilterPublication (the null-collapsing wrapper) also never throws on these', () => {
+    expect(() => parseFilterPublication(null as unknown as NostrEvent, opts)).not.toThrow()
+    expect(parseFilterPublication(null as unknown as NostrEvent, opts)).toBeNull()
+    expect(parseFilterPublication('nope' as unknown as NostrEvent, opts)).toBeNull()
+  })
+})
+
 // --- filterSignatureContext -----------------------------------------------------------------------
 
 describe('filterSignatureContext', () => {
@@ -1032,6 +1159,21 @@ describe('filterSignatureContext', () => {
     expect(filterSignatureContext('com.example.game', 'play.example.com')).toBe(
       'kindred:members:com.example.game:play.example.com',
     )
+  })
+
+  it('THROWS if namespace contains a colon — it would make the context ambiguous', () => {
+    expect(() => filterSignatureContext('com:evil', SERVER_ID)).toThrow(/namespace must not contain a colon/i)
+    // serverId MAY contain colons — only namespace is restricted.
+    expect(filterSignatureContext(NAMESPACE, 'wss://host:4848/path')).toBe(
+      `kindred:members:${NAMESPACE}:wss://host:4848/path`,
+    )
+  })
+
+  it('two different (namespace, serverId) pairs that would collide if namespace colons were allowed produce DIFFERENT contexts once rejected', () => {
+    // Without the namespace guard, ('a', 'b:c') and ('a:b', 'c') would both build
+    // 'kindred:members:a:b:c' — the exact ambiguity this throw exists to prevent.
+    expect(filterSignatureContext('a', 'b:c')).toBe('kindred:members:a:b:c')
+    expect(() => filterSignatureContext('a:b', 'c')).toThrow(/namespace must not contain a colon/i)
   })
 })
 
