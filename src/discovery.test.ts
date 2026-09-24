@@ -29,6 +29,7 @@ import {
   disclosureFor,
   buildFilterPublication,
   parseFilterPublication,
+  parseFilterPublicationResult,
   aggregatorQuery,
   buildOptOutRequest,
 } from './discovery.js'
@@ -636,6 +637,232 @@ describe('parseFilterPublication — namespace/serverId binding (M2 audit findin
     }
     const signed = fromWire(finalizeEvent(bad, server.sk))
     expect(parseFilterPublication(signed)).toBeNull()
+  })
+})
+
+// --- parseFilterPublicationResult — one reason code per parseFilterPublication rejection path -------
+//
+// `parseFilterPublication` collapses every failure to `null`; `parseFilterPublicationResult` is the
+// additive surface that names WHICH check failed. `bad-content` and `non-finite-epoch` are exercised
+// (or documented) separately below because a genuine wire event can never reach them through
+// `verifyEvent`/`parseFilter` as currently implemented — see each test's comment.
+describe('parseFilterPublicationResult — reason codes', () => {
+  it('bad-signature: a tampered event (bad id/sig)', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 100)
+    const template = buildFilterPublication({ namespace: NAMESPACE, serverId: SERVER_ID, blob, keyed: false, epoch: 100 })
+    const signed = fromWire(finalizeEvent(template, server.sk))
+    const tampered: NostrEvent = { ...signed, created_at: signed.created_at + 1 }
+    expect(parseFilterPublicationResult(tampered)).toEqual({ ok: false, reason: 'bad-signature' })
+  })
+
+  it('wrong-kind: a correctly-signed event of the wrong kind', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 100)
+    const wrongKind = {
+      kind: 1,
+      tags: [
+        ['d', `kindred:members:${NAMESPACE}:${SERVER_ID}`],
+        ['n', NAMESPACE],
+        ['epoch', '100'],
+        ['keyed', '0'],
+      ],
+      content: base64.encode(blob),
+      created_at: Math.floor(Date.now() / 1000),
+    }
+    const signed = fromWire(finalizeEvent(wrongKind, server.sk))
+    expect(parseFilterPublicationResult(signed)).toEqual({ ok: false, reason: 'wrong-kind' })
+  })
+
+  it('bad-content: an in-place content mutation on a stale-verifiedSymbol event slips past verifyEvent', () => {
+    // A real wire event can NEVER reach this: nostr-tools' `verifyEvent` recomputes the event id via
+    // `validateEvent`, which requires `content` to be a string, so a non-string content always fails
+    // step 1 (`bad-signature`) first. This check exists as defense-in-depth against a CALLER bug —
+    // reusing a `finalizeEvent` object (which carries an internal `verifiedSymbol:true` cache) directly
+    // and mutating it afterwards, rather than treating it as immutable / wire-cloning it first (see the
+    // `fromWire` helper's doc comment, and `verifyBondAttestation`'s doc comment in ./invite.ts for the
+    // same caveat). Deliberately NOT using `fromWire` here — that is the point of this test.
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 1)
+    const template = buildFilterPublication({ namespace: NAMESPACE, serverId: SERVER_ID, blob, keyed: false, epoch: 1 })
+    const signed = finalizeEvent(template, server.sk) as unknown as NostrEvent
+    ;(signed as unknown as { content: unknown }).content = 12345
+    expect(parseFilterPublicationResult(signed)).toEqual({ ok: false, reason: 'bad-content' })
+  })
+
+  it('bad-blob: non-base64 / undecodable content', () => {
+    const bad = {
+      kind: KINDRED_FILTER_KIND,
+      tags: [
+        ['d', `kindred:members:${NAMESPACE}:${SERVER_ID}`],
+        ['n', NAMESPACE],
+        ['epoch', '100'],
+        ['keyed', '0'],
+      ],
+      content: '@@@not base64@@@',
+      created_at: Math.floor(Date.now() / 1000),
+    }
+    const signed = fromWire(finalizeEvent(bad, generateSecretKey()))
+    expect(parseFilterPublicationResult(signed)).toEqual({ ok: false, reason: 'bad-blob' })
+  })
+
+  it('bad-blob-signature: a tampered fingerprint byte invalidates the in-blob Schnorr sig', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk, freshKeypair().pk], server.priv, 100)
+    const tamperedBlob = new Uint8Array(blob)
+    tamperedBlob[140] = tamperedBlob[140]! ^ 0xff
+    const template = buildFilterPublication({ namespace: NAMESPACE, serverId: SERVER_ID, blob: tamperedBlob, keyed: false, epoch: 100 })
+    const signed = fromWire(finalizeEvent(template, generateSecretKey()))
+    expect(parseFilterPublicationResult(signed)).toEqual({ ok: false, reason: 'bad-blob-signature' })
+  })
+
+  it('unparseable-blob: a self-consistently-signed blob whose length disagrees with its own header geometry', () => {
+    // verifyFilterBlob only checks the Schnorr signature over [0,64) + sha256([128,end)) — it does NOT
+    // validate KFLT header geometry, so it is happy to sign (and verify) a blob with GARBAGE trailing
+    // bytes appended after the real fingerprint array. `parseFilter` recomputes the expected length from
+    // the header and rejects the mismatch. This is exactly how a blob can pass step 4 (signature) and
+    // still fail step 5 (structural parse).
+    const server = freshKeypair()
+    const filt = buildMembershipFilter([memberKey(freshKeypair().pk)], { epoch: 1 })
+    const unsigned = serializeFilter(filt)
+    const withGarbage = new Uint8Array(unsigned.length + 8)
+    withGarbage.set(unsigned)
+    withGarbage.set([1, 2, 3, 4, 5, 6, 7, 8], unsigned.length)
+    const blob = signFilterBlob(withGarbage, server.priv)
+    expect(verifyFilterBlob(blob).ok).toBe(true) // signature covers the WHOLE (garbage-padded) buffer
+    expect(() => parseFilter(blob)).toThrow(/length mismatch/)
+
+    const template = buildFilterPublication({ namespace: NAMESPACE, serverId: SERVER_ID, blob, keyed: false, epoch: 1 })
+    const signed = fromWire(finalizeEvent(template, server.sk))
+    expect(parseFilterPublicationResult(signed)).toEqual({ ok: false, reason: 'unparseable-blob' })
+  })
+
+  // non-finite-epoch is unreachable through a genuine tessera-kit blob: `parseFilter` always returns
+  // `epoch` via `Number(dataView.getBigUint64(...))`, and every u64 value converts to a finite Number
+  // (u64's max is ~1.8e19, far under Number.MAX_VALUE) — so `Number.isFinite(signedEpoch)` can never be
+  // false for real tessera-kit output. The check is kept as defense-in-depth against a future codec
+  // change (or a hostile tessera-kit build) that stops guaranteeing that, not something reachable today.
+
+  it('bad-d-tag: the d-tag is missing the kindred:members: prefix', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 100)
+    const bad = {
+      kind: KINDRED_FILTER_KIND,
+      tags: [
+        ['d', `wrong:prefix:${NAMESPACE}:${SERVER_ID}`],
+        ['n', NAMESPACE],
+        ['epoch', '100'],
+        ['keyed', '0'],
+      ],
+      content: base64.encode(blob),
+      created_at: Math.floor(Date.now() / 1000),
+    }
+    const signed = fromWire(finalizeEvent(bad, generateSecretKey()))
+    expect(parseFilterPublicationResult(signed)).toEqual({ ok: false, reason: 'bad-d-tag' })
+  })
+
+  it('d-tag-no-colon: the d-tag has the right prefix but no namespace:serverId boundary', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 100)
+    const bad = {
+      kind: KINDRED_FILTER_KIND,
+      tags: [
+        ['d', 'kindred:members:onlynamespacenocolon'],
+        ['n', 'onlynamespacenocolon'],
+        ['epoch', '100'],
+        ['keyed', '0'],
+      ],
+      content: base64.encode(blob),
+      created_at: Math.floor(Date.now() / 1000),
+    }
+    const signed = fromWire(finalizeEvent(bad, generateSecretKey()))
+    expect(parseFilterPublicationResult(signed)).toEqual({ ok: false, reason: 'd-tag-no-colon' })
+  })
+
+  it('empty-namespace-or-serverid: the d-tag colon boundary leaves an empty namespace', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 100)
+    const bad = {
+      kind: KINDRED_FILTER_KIND,
+      tags: [
+        ['d', `kindred:members::${SERVER_ID}`], // empty namespace before the colon
+        ['n', ''],
+        ['epoch', '100'],
+        ['keyed', '0'],
+      ],
+      content: base64.encode(blob),
+      created_at: Math.floor(Date.now() / 1000),
+    }
+    const signed = fromWire(finalizeEvent(bad, generateSecretKey()))
+    expect(parseFilterPublicationResult(signed)).toEqual({ ok: false, reason: 'empty-namespace-or-serverid' })
+  })
+
+  it('n-tag-mismatch: the n tag disagrees with the namespace recovered from the d-tag', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 1)
+    const bad = {
+      kind: KINDRED_FILTER_KIND,
+      tags: [
+        ['d', `kindred:members:${NAMESPACE}:${SERVER_ID}`],
+        ['n', 'com.different.namespace'],
+        ['epoch', '1'],
+        ['keyed', '0'],
+      ],
+      content: base64.encode(blob),
+      created_at: Math.floor(Date.now() / 1000),
+    }
+    const signed = fromWire(finalizeEvent(bad, server.sk))
+    expect(parseFilterPublicationResult(signed)).toEqual({ ok: false, reason: 'n-tag-mismatch' })
+  })
+
+  it('author-not-signer: a genuine blob re-wrapped and signed by a DIFFERENT key (default requireAuthorIsSigner)', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 10)
+    const template = buildFilterPublication({ namespace: NAMESPACE, serverId: 'serverB', blob, keyed: false, epoch: 10 })
+    const republished = fromWire(finalizeEvent(template, generateSecretKey()))
+    expect(parseFilterPublicationResult(republished)).toEqual({ ok: false, reason: 'author-not-signer' })
+  })
+
+  it('epoch-tag-mismatch: a forged epoch tag disagreeing with the blob signed epoch', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 5)
+    const template = buildFilterPublication({ namespace: NAMESPACE, serverId: SERVER_ID, blob, keyed: false, epoch: 9999 })
+    const forged = fromWire(finalizeEvent(template, generateSecretKey()))
+    expect(parseFilterPublicationResult(forged, { requireAuthorIsSigner: false })).toEqual({
+      ok: false,
+      reason: 'epoch-tag-mismatch',
+    })
+  })
+
+  it('keyed-tag-mismatch: a forged keyed tag disagreeing with the blob signed keyed flag', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 7)
+    const template = buildFilterPublication({ namespace: NAMESPACE, serverId: SERVER_ID, blob, keyed: true, epoch: 7 })
+    const forged = fromWire(finalizeEvent(template, generateSecretKey()))
+    expect(parseFilterPublicationResult(forged, { requireAuthorIsSigner: false })).toEqual({
+      ok: false,
+      reason: 'keyed-tag-mismatch',
+    })
+  })
+
+  it('stale-epoch: the signed epoch is <= opts.minEpoch', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 50)
+    const template = buildFilterPublication({ namespace: NAMESPACE, serverId: SERVER_ID, blob, keyed: false, epoch: 50 })
+    const signed = fromWire(finalizeEvent(template, server.sk))
+    expect(parseFilterPublicationResult(signed, { minEpoch: 50 })).toEqual({ ok: false, reason: 'stale-epoch' })
+  })
+
+  it('ok:true carries the same value parseFilterPublication returns', () => {
+    const server = freshKeypair()
+    const blob = buildSignedBlob([freshKeypair().pk], server.priv, 3)
+    const template = buildFilterPublication({ namespace: NAMESPACE, serverId: SERVER_ID, blob, keyed: false, epoch: 3 })
+    const signed = fromWire(finalizeEvent(template, server.sk))
+    const result = parseFilterPublicationResult(signed)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value).toEqual(parseFilterPublication(signed))
+    }
   })
 })
 

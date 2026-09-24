@@ -249,38 +249,101 @@ export interface FilterPublication {
  * there), the SIGNED epoch + keyed (from the blob), the decoded blob, and the in-blob
  * `signerPubkeyHex` for the consumer's pin check.
  */
-export function parseFilterPublication(
+/** Why `parseFilterPublicationResult` rejected an event — one code per internal `return { ok: false }`
+ *  path, in the SAME order `parseFilterPublication`'s doc comment numbers its checks:
+ *   1. `bad-signature`             — the Nostr event signature is invalid (`verifyEvent`).
+ *   2. `wrong-kind`                — `event.kind !== KINDRED_FILTER_KIND`.
+ *   3. `bad-content`               — `event.content` is not a string.
+ *   4. `bad-blob`                  — the base64 content is undecodable, or the blob exceeds
+ *                                    tessera-kit's 64 MiB cap.
+ *   5. `bad-blob-signature`        — the IN-BLOB Schnorr provenance signature is invalid
+ *                                    (`verifyFilterBlob`) — the §10 invariant.
+ *   6. `unparseable-blob`          — the blob does not re-parse as a `MembershipFilter`
+ *                                    (`parseFilter` throws → tampered header).
+ *   7. `non-finite-epoch`          — the blob's signed epoch is not a finite number (defensive; a
+ *                                    genuinely-signed blob never produces this).
+ *   8. `bad-d-tag`                 — the d-tag is missing, or does not start with `D_TAG_PREFIX`.
+ *   9. `d-tag-no-colon`            — the d-tag has the right prefix but no `<namespace>:<serverId>`
+ *                                    colon boundary after it.
+ *   10. `empty-namespace-or-serverid` — the recovered namespace or serverId is the empty string.
+ *   11. `n-tag-mismatch`           — the indexable `n` tag is absent or disagrees with the namespace
+ *                                    recovered from the d-tag.
+ *   12. `author-not-signer`        — `opts.requireAuthorIsSigner` (default `true`) and
+ *                                    `event.pubkey !== signerPubkeyHex` (namespace/serverId binding).
+ *   13. `epoch-tag-mismatch`       — the event's (unsigned) `epoch` tag is present and disagrees with
+ *                                    the blob's SIGNED epoch (defense-in-depth tampering signal).
+ *   14. `keyed-tag-mismatch`       — the event's (unsigned) `keyed` tag is present and disagrees with
+ *                                    the blob's SIGNED `keyed` flag.
+ *   15. `stale-epoch`              — `opts.minEpoch` is set and the blob's SIGNED epoch `<= minEpoch`
+ *                                    (monotonicity — rollback defense). */
+export type FilterPublicationRejection =
+  | 'bad-signature'
+  | 'wrong-kind'
+  | 'bad-content'
+  | 'bad-blob'
+  | 'bad-blob-signature'
+  | 'unparseable-blob'
+  | 'non-finite-epoch'
+  | 'bad-d-tag'
+  | 'd-tag-no-colon'
+  | 'empty-namespace-or-serverid'
+  | 'n-tag-mismatch'
+  | 'author-not-signer'
+  | 'epoch-tag-mismatch'
+  | 'keyed-tag-mismatch'
+  | 'stale-epoch'
+
+/** Result of `parseFilterPublicationResult`: the parsed `FilterPublication` on success, or the
+ *  specific `FilterPublicationRejection` code on failure — additive alongside `parseFilterPublication`
+ *  (which collapses this to `null` on any failure, unchanged behaviour). */
+export type FilterPublicationResult =
+  | { ok: true; value: FilterPublication }
+  | { ok: false; reason: FilterPublicationRejection }
+
+/**
+ * Parse + verify a filter publication, returning WHY it was rejected instead of a bare `null`.
+ * Never throws. See `FilterPublicationRejection` for the full list of reason codes and what each
+ * one means; the checks run in that same order (fail-fast on the first that fails).
+ *
+ * `parseFilterPublication` is a thin wrapper over this function (`ok ? value : null`) kept for
+ * backward compatibility — this is the additive surface for a caller that wants to distinguish
+ * failure modes (e.g. to log a tampering signal differently from an ordinary decode failure).
+ *
+ * See `parseFilterPublication`'s doc comment for the full rationale behind each check (rollback
+ * hardening, namespace/serverId binding, minEpoch strictness, etc.) — it is not repeated here.
+ */
+export function parseFilterPublicationResult(
   event: NostrEvent,
   opts?: { minEpoch?: number; requireAuthorIsSigner?: boolean },
-): FilterPublication | null {
+): FilterPublicationResult {
   // 1. Nostr event signature (transport integrity).
-  if (!verifyEvent(event)) return null
+  if (!verifyEvent(event)) return { ok: false, reason: 'bad-signature' }
   // 2. Correct kind.
-  if (event.kind !== KINDRED_FILTER_KIND) return null
+  if (event.kind !== KINDRED_FILTER_KIND) return { ok: false, reason: 'wrong-kind' }
 
   // 3. Decode the blob from base64 content, delegated to tessera-kit's `./nostr` helper. It caps the
   //    ENCODED length BEFORE decoding (so an oversized payload can't be expanded into memory),
   //    decodes, and re-asserts the decoded length — throwing on a non-string, an over-length, or
-  //    malformed base64. We catch → null to keep this function's never-throws contract. Identical
+  //    malformed base64. We catch → a reason to keep this function's never-throws contract. Identical
   //    over-length-before-allocation behaviour to the previous hand-rolled cap.
-  if (typeof event.content !== 'string') return null
+  if (typeof event.content !== 'string') return { ok: false, reason: 'bad-content' }
   let blob: Uint8Array
   try {
     blob = decodeFilterPublicationContent(event.content, MAX_BLOB_BYTES)
   } catch {
-    return null
+    return { ok: false, reason: 'bad-blob' }
   }
 
   // 4. In-blob Schnorr provenance signature (§10 invariant: consumers verify the in-blob sig).
   const sigCheck = verifyFilterBlob(blob)
-  if (!sigCheck.ok) return null
+  if (!sigCheck.ok) return { ok: false, reason: 'bad-blob-signature' }
 
   // 5. Parse the blob with tessera-kit's hardened parser to recover the SIGNED epoch + keyed flag from
   //    the KFLT header (covered by the in-blob Schnorr sig verified in step 4). These — NOT the event
   //    tags — are authoritative for the rollback check and the returned value (see the doc note above).
-  //    `parseFilter` validates the header and throws on a malformed/over-cap blob; catch → null to keep
-  //    the never-throws contract. (verifyFilterBlob already passed, so a throw here is unexpected, but
-  //    we stay defensive.)
+  //    `parseFilter` validates the header and throws on a malformed/over-cap blob; catch → a reason to
+  //    keep the never-throws contract. (verifyFilterBlob already passed, so a throw here is
+  //    unexpected, but we stay defensive.)
   let signedEpoch: number
   let signedKeyed: boolean
   try {
@@ -288,29 +351,31 @@ export function parseFilterPublication(
     signedEpoch = f.epoch
     signedKeyed = f.keyed
   } catch {
-    return null
+    return { ok: false, reason: 'unparseable-blob' }
   }
-  if (!Number.isFinite(signedEpoch)) return null
+  if (!Number.isFinite(signedEpoch)) return { ok: false, reason: 'non-finite-epoch' }
 
   // 6. Parse the d-tag → namespace / serverId. Prefix is `kindred:members:`; the namespace is the
   //    segment up to the NEXT colon, and the serverId is the rest (so a serverId may itself contain
   //    colons, e.g. a `wss://host:port/path` URL). namespace/serverId are NOT in the blob, so the
   //    d-tag is authoritative for them — that's correct and unchanged.
   const dTag = event.tags.find((t) => t[0] === 'd')?.[1]
-  if (typeof dTag !== 'string' || !dTag.startsWith(D_TAG_PREFIX)) return null
+  if (typeof dTag !== 'string' || !dTag.startsWith(D_TAG_PREFIX)) return { ok: false, reason: 'bad-d-tag' }
   const rest = dTag.slice(D_TAG_PREFIX.length)
   const firstColon = rest.indexOf(':')
-  if (firstColon < 0) return null
+  if (firstColon < 0) return { ok: false, reason: 'd-tag-no-colon' }
   const namespace = rest.slice(0, firstColon)
   const serverId = rest.slice(firstColon + 1)
-  if (namespace.length === 0 || serverId.length === 0) return null
+  if (namespace.length === 0 || serverId.length === 0) {
+    return { ok: false, reason: 'empty-namespace-or-serverid' }
+  }
 
   // 6b. The indexable 'n' tag MUST equal the namespace recovered from the d-tag (M2 audit finding).
   //     Every publication this module builds (`buildFilterPublication`) always sets both from the
   //     same `namespace`, so this costs a genuine publication nothing; it closes a mismatch/tampering
   //     path where an aggregator's `#n` index and the addressable d-tag identity disagree.
   const nTag = event.tags.find((t) => t[0] === 'n')?.[1]
-  if (nTag !== namespace) return null
+  if (nTag !== namespace) return { ok: false, reason: 'n-tag-mismatch' }
 
   // 7. Namespace/serverId binding (M2 audit finding — see the doc note above): the in-blob signature
   //    covers neither namespace nor serverId, so require the OUTER event's signer to be the SAME key
@@ -318,7 +383,7 @@ export function parseFilterPublication(
   //    id), so this transitively ties the server's signed identity to the d-tag/n-tag it published
   //    under. Opt out via `opts.requireAuthorIsSigner: false` for a different trust model.
   if (opts?.requireAuthorIsSigner !== false && event.pubkey !== sigCheck.signerPubkeyHex) {
-    return null
+    return { ok: false, reason: 'author-not-signer' }
   }
 
   // 8. Defense-in-depth: if the (UNSIGNED) event tags are PRESENT and DISAGREE with the blob's SIGNED
@@ -328,22 +393,39 @@ export function parseFilterPublication(
   const epochTag = event.tags.find((t) => t[0] === 'epoch')?.[1]
   if (epochTag !== undefined) {
     const taggedEpoch = Number(epochTag)
-    if (!Number.isFinite(taggedEpoch) || taggedEpoch !== signedEpoch) return null
+    if (!Number.isFinite(taggedEpoch) || taggedEpoch !== signedEpoch) {
+      return { ok: false, reason: 'epoch-tag-mismatch' }
+    }
   }
   const keyedTag = event.tags.find((t) => t[0] === 'keyed')?.[1]
-  if (keyedTag !== undefined && (keyedTag === '1') !== signedKeyed) return null
+  if (keyedTag !== undefined && (keyedTag === '1') !== signedKeyed) {
+    return { ok: false, reason: 'keyed-tag-mismatch' }
+  }
 
   // 9. Epoch monotonicity (replay/rollback defense) — against the blob's SIGNED epoch, never the tag.
-  if (opts?.minEpoch !== undefined && signedEpoch <= opts.minEpoch) return null
+  if (opts?.minEpoch !== undefined && signedEpoch <= opts.minEpoch) {
+    return { ok: false, reason: 'stale-epoch' }
+  }
 
   return {
-    namespace,
-    serverId,
-    blob,
-    keyed: signedKeyed,
-    epoch: signedEpoch,
-    signerPubkeyHex: sigCheck.signerPubkeyHex,
+    ok: true,
+    value: {
+      namespace,
+      serverId,
+      blob,
+      keyed: signedKeyed,
+      epoch: signedEpoch,
+      signerPubkeyHex: sigCheck.signerPubkeyHex,
+    },
   }
+}
+
+export function parseFilterPublication(
+  event: NostrEvent,
+  opts?: { minEpoch?: number; requireAuthorIsSigner?: boolean },
+): FilterPublication | null {
+  const r = parseFilterPublicationResult(event, opts)
+  return r.ok ? r.value : null
 }
 
 /** Relay filter an aggregator uses to collect every server's publication for one namespace, across
