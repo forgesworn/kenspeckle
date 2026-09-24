@@ -63,3 +63,9 @@ jobs:
       - run: npm run build
       - run: npm run vectors:check
       - run: npm test
+      # Publish guard (H1): refuse git/file/link/http(s) specs in dependencies/optionalDependencies/
+      # peerDependencies. It also runs in `prepack`, which is what the release pipeline's `npm pack`
+      # triggers; running it here surfaces a violation on every push, not only at release time.
+      # Last on purpose: while @forgesworn/tessera-kit is still a git dependency this step fails,
+      # and the steps above still report their own results.
+      - run: npm run check:publishable-deps

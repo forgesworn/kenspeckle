@@ -19,8 +19,8 @@ npm install
 > `github.com/forgesworn/tessera-kit` (SSH key or a PAT in your global git config)
 > before running `npm install`.
 >
-> `scripts/check-publishable-deps.mjs` runs in `prepublishOnly` and **refuses to
-> publish** while any `dependencies`/`peerDependencies` entry is a git/file/http(s)
+> `scripts/check-publishable-deps.mjs` runs in `prepack` (every `npm pack` / `npm publish`) and in CI, and **refuses to
+> publish** while any `dependencies`/`optionalDependencies`/`peerDependencies` entry is a git/file/http(s)
 > spec — so this cannot accidentally ship to npm while the dependency is
 > unresolved. Once `@forgesworn/tessera-kit` is published, repoint this dependency
 > to a plain npm semver range (`npm install @forgesworn/tessera-kit@^X.Y.Z`)
@@ -35,7 +35,7 @@ npm install
 | `npm run build` | Compile TypeScript to dist/ |
 | `npm run typecheck` | Type-check without emitting |
 | `npm run vectors:check` | Verify the frozen bond ECDH golden vector(s) against the built code |
-| `npm run check:publishable-deps` | Fail if any `dependencies`/`peerDependencies` entry is a git/file/http(s) spec (runs in `prepublishOnly`) |
+| `npm run check:publishable-deps` | Fail if any `dependencies`/`optionalDependencies`/`peerDependencies` entry is a git/file/link/http(s) spec (runs in `prepack` and CI) |
 
 ## Project Structure
 

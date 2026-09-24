@@ -52,7 +52,8 @@
     "vectors:check": "node ./scripts/check-vectors.mjs",
     "check:publishable-deps": "node ./scripts/check-publishable-deps.mjs",
     "prepare": "npm run build",
-    "prepublishOnly": "npm run typecheck && npm test && npm run build && npm run vectors:check && npm run check:publishable-deps"
+    "prepack": "npm run check:publishable-deps",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build && npm run vectors:check"
   },
   "keywords": [
     "nostr",

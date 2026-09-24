@@ -1,5 +1,5 @@
-// Prepublish guard: fail if any `dependencies` or `peerDependencies` entry in package.json is a
-// git, file, or http(s) URL spec instead of a plain registry semver range.
+// Prepublish guard: fail if any `dependencies`, `optionalDependencies` or `peerDependencies` entry
+// in package.json is a git, file, link, or http(s) URL spec instead of a plain registry range.
 //
 // WHY THIS EXISTS (H1 audit finding). `@forgesworn/kenspeckle` previously shipped
 // `@forgesworn/tessera-kit` as a `git+https://…` dependency. `prepublishOnly` ran typecheck, test,
@@ -8,11 +8,18 @@
 // published, `npm i @forgesworn/kenspeckle` fails for every external user: npm cannot clone a
 // private git remote it has no credentials for, and a `file:` path only ever resolved on the
 // machine that published it. This script is the guard that was missing: it is wired into
-// `prepublishOnly` (package.json) so a publish attempt fails LOUDLY, before anything reaches the
+// `prepack` (package.json) so a publish attempt fails LOUDLY, before anything reaches the
 // registry, rather than failing silently for downstream installers.
 //
-// `devDependencies` are deliberately NOT checked — a git/file/http devDependency never ships (npm
-// only publishes `dependencies` + `peerDependencies` metadata into the published manifest) and
+// WHY `prepack`, NOT `prepublishOnly`: the release pipeline (forgesworn/anvil
+// `steps/record-tarball.sh`) builds the artefact with `npm pack` and later uploads it with
+// `npm publish <tarball>`, which never runs `prepublishOnly`. `npm pack` does run `prepack`, and so
+// does a plain `npm publish`. Installing kenspeckle from git runs only `prepare` (pacote), never
+// `prepack`, so this cannot break a git-pinned consumer's install. CI also runs this script as an
+// explicit step (ci.yml).
+//
+// `devDependencies` are deliberately NOT checked — a devDependency is never installed for a
+// downstream consumer (only `dependencies`, `optionalDependencies` and `peerDependencies` are) and
 // tooling commonly pins a fork or a local path there.
 //
 // Exits non-zero with a clear, per-offending-package message on ANY match. Never silently passes
@@ -28,9 +35,12 @@ const PACKAGE_JSON_PATH = path.join(__dirname, '..', 'package.json')
 
 // Any spec that is not a plain registry range (semver, `^`/`~`/`*`/`x`, a dist-tag, etc.) and
 // instead names an install SOURCE npm would need to reach at install time for every downstream
-// consumer: a git remote (`git+…`, `git://…`, the shorthand `user/repo`), a local filesystem path
-// (`file:`), a bare tarball URL (`http://`/`https://`), or the `github:` shorthand.
-const NON_REGISTRY_SPEC = /^(git\+|git:\/\/|file:|https?:\/\/|github:)/i
+// consumer: a git remote (`git+…`, `git://…`, `git@host:…`, the `github:`/`gitlab:`/`bitbucket:`/
+// `gist:` shorthands, or the bare `user/repo` shorthand), a local filesystem path (`file:`,
+// `link:`), or a bare tarball URL (`http://`/`https://`). A registry range never contains `/`, and
+// the `npm:@scope/name@range` alias form cannot match `REPO_SHORTHAND` (its first segment has `:`).
+const NON_REGISTRY_SPEC = /^(git\+|git:\/\/|git@|file:|link:|https?:\/\/|github:|gitlab:|bitbucket:|gist:)/i
+const REPO_SHORTHAND = /^[a-z0-9][\w.-]*\/[\w.-]+(#.*)?$/i
 
 function loadPackageJson() {
   let raw
@@ -50,11 +60,11 @@ function loadPackageJson() {
 
 function findOffenders(pkg) {
   const offenders = []
-  for (const field of ['dependencies', 'peerDependencies']) {
+  for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
     const deps = pkg[field]
     if (deps === null || typeof deps !== 'object') continue
     for (const [name, spec] of Object.entries(deps)) {
-      if (typeof spec === 'string' && NON_REGISTRY_SPEC.test(spec.trim())) {
+      if (typeof spec === 'string' && (NON_REGISTRY_SPEC.test(spec.trim()) || REPO_SHORTHAND.test(spec.trim()))) {
         offenders.push({ field, name, spec })
       }
     }
@@ -79,4 +89,4 @@ if (offenders.length > 0) {
   process.exit(1)
 }
 
-console.log('check-publishable-deps: all dependencies/peerDependencies are plain registry specs.')
+console.log('check-publishable-deps: all dependencies/optionalDependencies/peerDependencies are plain registry specs.')

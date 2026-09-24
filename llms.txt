@@ -26,8 +26,8 @@ npm i @forgesworn/kenspeckle
 dependency (`git+https://github.com/forgesworn/tessera-kit.git#<commit>`) — `npm ci`/`npm install`
 clone it directly; nothing to pack/symlink locally. An external installer needs read access to that
 repo (or @forgesworn/tessera-kit published to npm) for `npm i @forgesworn/kenspeckle` to succeed.
-`scripts/check-publishable-deps.mjs` runs in `prepublishOnly` and REFUSES to publish while any
-dependency/peerDependency is a git/file/http(s) spec, so this cannot ship to npm unresolved.
+`scripts/check-publishable-deps.mjs` runs in `prepack` (so on `npm pack` and `npm publish`) and in CI, and REFUSES to publish while any
+dependency/optionalDependency/peerDependency is a git/file/http(s) spec, so this cannot ship to npm unresolved.
 
 ```typescript
 import { deriveBondSecret, bondWords, verifyBondWord } from '@forgesworn/kenspeckle/bond'
