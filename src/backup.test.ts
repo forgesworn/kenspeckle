@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { exportEntriesEncrypted, importEntries } from './backup.js'
+import { xchacha20poly1305 } from '@noble/ciphers/chacha.js'
+import { concatBytes, utf8ToBytes } from '@noble/ciphers/utils.js'
+import { BACKUP_FORMAT_VERSION, exportEntriesEncrypted, importEntries } from './backup.js'
 import type { KindredEntry, KinEntry, KithEntry, KenEntry } from './types.js'
 
 const A = 'a'.repeat(64)
@@ -147,5 +149,48 @@ describe('exportEntriesEncrypted / importEntries', () => {
     expect(restored[0]!.annotations?.groupId).toBe('abcdef')
     // non-hex annotation fields are untouched.
     expect(restored[0]!.annotations?.label).toBe('gym buddy')
+  })
+})
+
+describe('backup format header + AAD (L10)', () => {
+  /** The pre-header format every existing backup uses: nonce(24) || ciphertext, no AAD. */
+  function legacyBlob(list: KindredEntry[], nonce = new Uint8Array(24).fill(3)): Uint8Array {
+    const ct = xchacha20poly1305(key, nonce).encrypt(utf8ToBytes(JSON.stringify(list)))
+    return concatBytes(nonce, ct)
+  }
+
+  it('writes "KSBK" || version as a 5-byte header', () => {
+    const blob = exportEntriesEncrypted(entries, key)
+    expect(Array.from(blob.subarray(0, 5))).toEqual([0x4b, 0x53, 0x42, 0x4b, BACKUP_FORMAT_VERSION])
+    expect(blob.length).toBe(5 + 24 + utf8ToBytes(JSON.stringify(entries)).length + 16)
+  })
+
+  it('still reads a legacy header-less backup', () => {
+    expect(importEntries(legacyBlob(entries), key)).toEqual(entries)
+  })
+
+  it('still reads a legacy backup whose random nonce happens to start with the header bytes', () => {
+    const nonce = concatBytes(utf8ToBytes('KSBK'), Uint8Array.of(1), new Uint8Array(19).fill(5))
+    expect(importEntries(legacyBlob(entries, nonce), key)).toEqual(entries)
+  })
+
+  it('binds the header: a flipped version byte or magic fails authentication', () => {
+    const blob = exportEntriesEncrypted(entries, key)
+    for (const i of [0, 4]) {
+      const tampered = blob.slice()
+      tampered[i] ^= 0x01
+      expect(() => importEntries(tampered, key)).toThrow()
+    }
+  })
+
+  it('a v1 body stripped of its header is not accepted as legacy (the AAD differs)', () => {
+    const blob = exportEntriesEncrypted(entries, key)
+    expect(() => importEntries(blob.subarray(5), key)).toThrow()
+  })
+
+  it('a tampered legacy blob still throws', () => {
+    const blob = legacyBlob(entries)
+    blob[blob.length - 1] ^= 0xff
+    expect(() => importEntries(blob, key)).toThrow()
   })
 })
