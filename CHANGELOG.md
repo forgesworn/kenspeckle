@@ -209,7 +209,7 @@ this section, and the individually marked entries in the sections after it.
 
 - **H1 — `@forgesworn/tessera-kit` stays a pinned git dependency** (a decision,
   not a fix — see the sibling-dependency notes in README/CONTRIBUTING). **New:**
-  `scripts/check-publishable-deps.mjs`, wired into `prepack` (which `npm pack` runs — the release pipeline builds its tarball with `npm pack` and then runs `npm publish <tarball>`, which skips `prepublishOnly`) and run as an explicit CI step, fails the
+  `scripts/check-publishable-deps.mjs`, wired into `prepack` (which `npm pack` runs — the release pipeline builds its tarball with `npm pack` and then runs `npm publish <tarball>`, which skips `prepublishOnly`) fails the
   publish if any `dependencies`/`optionalDependencies`/`peerDependencies` entry is a git/file/http(s)
   spec, with a clear error naming the offending package(s). README, llms.txt,
   and CONTRIBUTING no longer describe a `file:` tarball flow (that was never how
