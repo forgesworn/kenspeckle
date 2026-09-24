@@ -30,6 +30,7 @@ import {
   testMembership,
   memberKey,
   verifyFilterBlob,
+  isValidFilterContext,
   TesseraError,
   type MembershipFilter,
 } from '@forgesworn/tessera-kit'
@@ -72,18 +73,6 @@ function nowSec(): number {
  *  `filterSignatureContext`'s context string can never drift apart from one another. */
 function dTagValue(namespace: string, serverId: string): string {
   return `${D_TAG_PREFIX}${namespace}:${serverId}`
-}
-
-/** A lone (unpaired) UTF-16 surrogate: a high surrogate NOT followed by a low surrogate, or a low
- *  surrogate NOT preceded by a high surrogate. tessera-kit rejects a `context` containing one
- *  (PROTOCOL.md §4.1, shared with `serverId`'s §5.3 check via its own `src/text.ts`) — reimplemented
- *  here so `parseFilterPublicationResult` can validate `context` itself, upfront, as part of `opts`
- *  validation (never relying on catching a thrown `TesseraError` for this), since that isn't part of
- *  tessera-kit's exported public API. */
-const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
-
-function isWellFormedContext(context: string): boolean {
-  return context.length > 0 && !LONE_SURROGATE.test(context) && new TextEncoder().encode(context).byteLength <= 1024
 }
 
 /**
@@ -431,9 +420,9 @@ export function parseFilterPublicationResult(
   //        rollback defense exactly the way tessera-kit's own `verifyAndParseFilter` warns a `NaN`
   //        `minEpoch` would, PROTOCOL.md §4.3);
   //      - the CONTEXT built from `opts.namespace`/`opts.serverId` is itself well-formed (non-empty,
-  //        no lone UTF-16 surrogate, UTF-8 encoding ≤ 1024 bytes — the same shape tessera-kit's own
-  //        `verifyFilterBlob` would otherwise throw a `TesseraError` for, checked here proactively so
-  //        that throw is never reachable in practice — see `CONTEXT_ERROR_CODES` below, kept as
+  //        no lone UTF-16 surrogate, UTF-8 encoding ≤ 1024 bytes), via tessera-kit's exported
+  //        `isValidFilterContext` — the same predicate `verifyFilterBlob` uses before it throws a
+  //        `TesseraError` — checked here up front so that throw is never reachable in practice — see `CONTEXT_ERROR_CODES` below, kept as
   //        defense-in-depth only).
   if (
     opts === null ||
@@ -444,7 +433,7 @@ export function parseFilterPublicationResult(
     typeof opts.serverId !== 'string' ||
     opts.serverId.length === 0 ||
     (opts.minEpoch !== undefined && !(Number.isSafeInteger(opts.minEpoch) && opts.minEpoch >= 0)) ||
-    !isWellFormedContext(dTagValue(opts.namespace, opts.serverId))
+    !isValidFilterContext(dTagValue(opts.namespace, opts.serverId))
   ) {
     return { ok: false, reason: 'invalid-opts' }
   }
@@ -509,7 +498,7 @@ export function parseFilterPublicationResult(
   //    with the mandatory context binding — closes cross-server/namespace filter substitution
   //    cryptographically). `verifyFilterBlob` throws a `TesseraError` only if `context` ITSELF is
   //    malformed (empty / not well-formed UTF-16 / over 1024 UTF-8 bytes) — already RULED OUT by
-  //    step 1's `isWellFormedContext` check, so this catch is defense-in-depth only, not a path any
+  //    step 1's `isValidFilterContext` check, so this catch is defense-in-depth only, not a path any
   //    test can currently reach; mapped defensively to `'invalid-opts'` (never on `.message` — see
   //    `CONTEXT_ERROR_CODES`) rather than allowed to escape this never-throws function. Any other
   //    unexpected throw is mapped to `'bad-blob-signature'`, the closest existing code.
