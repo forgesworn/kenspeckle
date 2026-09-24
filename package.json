@@ -1,6 +1,6 @@
 {
   "name": "@forgesworn/kenspeckle",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Verified relationships across three social distances — kin (family), kith (mutually verified), ken (one-way recognised) — with handshake, bond ceremony, ken trust-store, and local presence discovery.",
   "type": "module",
   "main": "./dist/index.js",
@@ -50,8 +50,9 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "vectors:check": "node ./scripts/check-vectors.mjs",
+    "check:publishable-deps": "node ./scripts/check-publishable-deps.mjs",
     "prepare": "npm run build",
-    "prepublishOnly": "npm run typecheck && npm test && npm run build && npm run vectors:check"
+    "prepublishOnly": "npm run typecheck && npm test && npm run build && npm run vectors:check && npm run check:publishable-deps"
   },
   "keywords": [
     "nostr",
