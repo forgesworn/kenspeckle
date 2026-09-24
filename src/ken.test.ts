@@ -787,6 +787,79 @@ describe('acceptKenRotation — explicit, user-confirmed pin move (no dual-accep
       expect(() => acceptKenRotation(entry)).not.toThrow()
     })
   })
+
+  // --- CURRENT-BEHAVIOUR coverage: double accept, rotate after revoke, accept on a revoked entry ----
+  describe('double accept / rotate after revoke / accept on a revoked entry (current behaviour)', () => {
+    it('double accept: a second acceptKenRotation() call on an already-accepted entry throws', () => {
+      const original = freshKeypair()
+      const rotated = freshKeypair()
+      const proposed: KenEntry = {
+        ...pinManual(original.pk),
+        rotation: { newPubkey: rotated.pk, observedAt: 1, via: 'manual', accepted: false },
+      }
+      const accepted = acceptKenRotation(proposed)
+      expect(accepted.rotation!.accepted).toBe(true)
+      // A second accept() call on the now-accepted entry throws — see the H2 guard above.
+      expect(() => acceptKenRotation(accepted)).toThrow(/already been accepted/)
+    })
+
+    it('rotate after revoke: revokeKen() does not clear a PRE-EXISTING pending rotation, but resolveKen() will not propose a NEW one for a revoked entry', async () => {
+      const original = freshKeypair()
+      const rotated = freshKeypair()
+      const proposed: KenEntry = {
+        ...pinManual(original.pk),
+        rotation: { newPubkey: rotated.pk, observedAt: 1, via: 'manual', accepted: false },
+      }
+      // revokeKen only sets `revoked:true` (a shallow spread) — it does not touch `rotation`.
+      const revoked = revokeKen(proposed)
+      expect(revoked.revoked).toBe(true)
+      expect(revoked.rotation).toEqual(proposed.rotation)
+
+      // resolveKen refuses to propose (or re-propose) anything for a revoked entry — no network call.
+      const revokedWithNip05: KenEntry = { ...revoked, nip05: 'x@localhost' }
+      let called = false
+      const fetch = (async () => {
+        called = true
+        return { ok: true, status: 200, json: async () => ({ names: {} }) } as Response
+      }) as typeof globalThis.fetch
+      const stillRevoked = await resolveKen(revokedWithNip05, fetch)
+      expect(stillRevoked).toBe(revokedWithNip05) // same reference: returned unchanged
+      expect(called).toBe(false)
+    })
+
+    it('accept on a revoked entry: acceptKenRotation() has NO `entry.revoked` guard — it silently accepts', () => {
+      // NOTE (current-behaviour, not changed here): unlike `attributeSignature` and `verifyKeyControl`
+      // (which both check `entry.revoked` FIRST and fail closed), `acceptKenRotation` has no revoked
+      // guard at all. Given an entry that is BOTH revoked and carries a pending rotation (e.g. the
+      // rotation was proposed before the revoke, or was hand-built), `acceptKenRotation` moves the pin
+      // to `rotation.newPubkey` and marks the rotation accepted WITHOUT complaint or any explicit
+      // un-revoke step. This looks like a gap worth a guard in a future change (accepting a rotation
+      // for a dead pin is nonsensical — see `resolveKen`'s own L3 reasoning for why it refuses to
+      // PROPOSE one), but the entry's `revoked` flag survives the spread, so `attributeSignature` and
+      // `verifyKeyControl` both still fail closed with `reason:'revoked'` on the result regardless of
+      // the silently-moved pin. Documented here as CURRENT behaviour; src is intentionally unchanged.
+      const original = freshKeypair()
+      const rotated = freshKeypair()
+      const entry: KenEntry = {
+        ...revokeKen(pinManual(original.pk)),
+        rotation: { newPubkey: rotated.pk, observedAt: 1, via: 'manual', accepted: false },
+      }
+      expect(entry.revoked).toBe(true)
+
+      const accepted = acceptKenRotation(entry)
+      expect(accepted.revoked).toBe(true) // still revoked — the spread preserves it
+      expect(accepted.pubkey).toBe(rotated.pk) // ...but the pin was silently moved anyway
+      expect(accepted.previousPubkeys).toContain(original.pk)
+      expect(accepted.rotation!.accepted).toBe(true)
+
+      // Downstream, both fail-closed checks still report 'revoked' — not the (also-true) new pubkey.
+      const newEvent = signEvent(rotated.sk, 'statement')
+      expect(attributeSignature(accepted, newEvent)).toEqual({ ok: false, reason: 'revoked' })
+      const { nonce } = buildKeyControlChallenge()
+      const proof = signEvent(rotated.sk, nonce)
+      expect(verifyKeyControl(accepted, nonce, proof)).toEqual({ ok: false, reason: 'revoked' })
+    })
+  })
 })
 
 // --- revokeKen (fail-closed) ----------------------------------------------------------------------
