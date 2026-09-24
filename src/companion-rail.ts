@@ -8,7 +8,7 @@ import type { GrantContactView, GrantScope } from './grant-envelope.js'
 import { cleanDisplayText, parseGrantEnvelope } from './grant-envelope.js'
 import { COMPANION_LOCATOR_PREFIX } from './types.js'
 import type { KenEntry, KenProvenance } from './types.js'
-import { validateProvenance } from './validate.js'
+import { validateNip05, validateProvenance } from './validate.js'
 
 export const PAIRING_SCHEME = 'signet-grant:'
 export const ACK_KIND = 21237
@@ -377,9 +377,17 @@ function parseClaimedProvenance(v: unknown): KenProvenance | null {
   return { source: p.source, locator, confirmedAt: p.confirmedAt }
 }
 
-/** Basic NIP-05 `local@domain` shape — the SAME guard `./ken` applies before resolving. A claimed
- *  identifier that fails this must never reach a URL constructor. Mirrors `ken.ts`'s `NIP05`. */
-const NIP05 = /^[a-z0-9\-_.]+@[a-z0-9\-_.]+$/i
+/** Strict NIP-05 `local@domain` shape — the SAME `validateNip05` guard `./ken` applies before
+ *  resolving (no port, userinfo, path/query/fragment or IP literal). A claimed identifier that fails
+ *  it must never reach a URL constructor. */
+function isStrictNip05(value: string): boolean {
+  try {
+    validateNip05(value)
+    return true
+  } catch {
+    return false
+  }
+}
 
 /** Project a `WireKen` to exactly its declared fields — never the caller's object.
  *
@@ -408,7 +416,7 @@ function parseWireKen(item: unknown): WireKen | null {
   // Shape-guard the claimed identifier here too: `resolveNip05` documents that its input is
   // "validated by the caller", and an unguarded value would be interpolated into a fetch URL.
   const nip05 = cleanText(k.nip05, 200)
-  if (nip05 !== undefined && NIP05.test(nip05)) out.nip05 = nip05
+  if (nip05 !== undefined && isStrictNip05(nip05)) out.nip05 = nip05
 
   const claimed = parseClaimedProvenance(k.claimedProvenance)
   if (claimed) out.claimedProvenance = claimed
@@ -568,7 +576,7 @@ export function landReturnedKen(
   // A claimed nip05 is EVIDENCE, not an address — see the note above. Shape-guard it (it would
   // otherwise be interpolated into a fetch URL by `resolveNip05`) and file it as a corroboration.
   const claimedNip05 = cleanText(wire.nip05, 200)
-  if (claimedNip05 !== undefined && NIP05.test(claimedNip05)) {
+  if (claimedNip05 !== undefined && isStrictNip05(claimedNip05)) {
     claims.push({ source: 'nip05', locator: claimedNip05, confirmedAt: opts.nowSec })
   }
 

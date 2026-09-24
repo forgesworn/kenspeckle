@@ -587,3 +587,22 @@ describe('landReturnedKen — invisible characters in the appName locator segmen
     expect(tooLong.provenance.locator).toBe(`companion:${'a'.repeat(64)}`)
   })
 })
+
+describe('return rail — strict NIP-05 claims', () => {
+  const bad = ['wren@1.2.3.4', 'wren@example.org:8443', 'wren@localhost', 'wren@-bad.example', 'a@b@example.org']
+
+  it.each(bad)('parseReturnEnvelope drops a claimed nip05 %s the strict validator rejects', (nip05) => {
+    const parsed = parseReturnEnvelope(JSON.stringify({ v: 1, additions: [{ pubkey: APP, nip05 }] }))
+    expect(parsed?.additions[0]).toEqual({ pubkey: APP })
+  })
+
+  it.each(bad)('landReturnedKen files no corroboration for %s', (nip05) => {
+    const landed = landReturnedKen({ pubkey: APP, nip05 }, { appName: 'App', ownerPubkeyHex: OWNER, nowSec: NOW })
+    expect(landed.corroborations).toBeUndefined()
+  })
+
+  it('still accepts a plain local@domain claim', () => {
+    const parsed = parseReturnEnvelope(JSON.stringify({ v: 1, additions: [{ pubkey: APP, nip05: 'wren@example.org' }] }))
+    expect(parsed?.additions[0]?.nip05).toBe('wren@example.org')
+  })
+})
