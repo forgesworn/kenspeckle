@@ -25,6 +25,7 @@ import {
   dropKen,
 } from './ken.js'
 import type { KenEntry, NostrEvent } from './types.js'
+import { MAX_CORROBORATIONS } from './validate.js'
 
 // --- Fixtures -------------------------------------------------------------------------------------
 
@@ -74,12 +75,15 @@ function pinManual(pubkeyHex: string, extra?: Partial<KenEntry>): KenEntry {
   }
 }
 
-/** A fake `fetch` that returns one well-known nostr.json body for any URL. */
+/** A fake `fetch` that returns one well-known nostr.json body for any URL. `resolveNip05` reads the
+ *  body via `.text()` (L1 audit finding — size-capped before `JSON.parse`), so this double provides
+ *  BOTH `.text()` and `.json()` (the latter kept for any direct caller). */
 function fakeFetchJson(body: unknown, status = 200): typeof globalThis.fetch {
   return (async () =>
     ({
       ok: status >= 200 && status < 300,
       status,
+      text: async () => JSON.stringify(body),
       json: async () => body,
     }) as Response) as typeof globalThis.fetch
 }
@@ -142,6 +146,148 @@ describe('pinKen', () => {
     expect(() =>
       pinKen({ pubkeyHex: pk, ownerPubkeyHex: 'short', provenance: { source: 'manual', locator: 'x', confirmedAt: 1 } }),
     ).toThrow(/64 hex/)
+  })
+
+  // --- M1: strict NIP-05 validation on the nip05 param -----------------------------------------
+  it('rejects an SSRF-shaped nip05 (path/query/fragment smuggled into the domain half)', () => {
+    const { pk } = freshKeypair()
+    expect(() =>
+      pinKen({
+        pubkeyHex: pk,
+        ownerPubkeyHex: OWNER,
+        nip05: 'x@evil.example/track?id=42#',
+        provenance: { source: 'manual', locator: 'x', confirmedAt: 1 },
+      }),
+    ).toThrow(/nip05/i)
+  })
+
+  it('rejects a nip05 with userinfo smuggled via a second @ (domain becomes user@internal.lan)', () => {
+    const { pk } = freshKeypair()
+    expect(() =>
+      pinKen({
+        pubkeyHex: pk,
+        ownerPubkeyHex: OWNER,
+        nip05: 'x@user@internal.lan',
+        provenance: { source: 'manual', locator: 'x', confirmedAt: 1 },
+      }),
+    ).toThrow(/nip05/i)
+  })
+
+  it('rejects a nip05 with no @ at all', () => {
+    const { pk } = freshKeypair()
+    expect(() =>
+      pinKen({
+        pubkeyHex: pk,
+        ownerPubkeyHex: OWNER,
+        nip05: 'not-an-nip05-at-all',
+        provenance: { source: 'manual', locator: 'x', confirmedAt: 1 },
+      }),
+    ).toThrow(/nip05/i)
+  })
+
+  it('rejects a nip05 with an IPv4-literal domain', () => {
+    const { pk } = freshKeypair()
+    expect(() =>
+      pinKen({
+        pubkeyHex: pk,
+        ownerPubkeyHex: OWNER,
+        nip05: 'x@192.168.1.1',
+        provenance: { source: 'manual', locator: 'x', confirmedAt: 1 },
+      }),
+    ).toThrow(/nip05/i)
+  })
+
+  it('rejects a nip05 with a port on the domain', () => {
+    const { pk } = freshKeypair()
+    expect(() =>
+      pinKen({
+        pubkeyHex: pk,
+        ownerPubkeyHex: OWNER,
+        nip05: 'x@example.com:8080',
+        provenance: { source: 'manual', locator: 'x', confirmedAt: 1 },
+      }),
+    ).toThrow(/nip05/i)
+  })
+
+  it('accepts a well-formed nip05', () => {
+    const { pk } = freshKeypair()
+    const entry = pinKen({
+      pubkeyHex: pk,
+      ownerPubkeyHex: OWNER,
+      nip05: 'alice@example.com',
+      provenance: { source: 'manual', locator: 'x', confirmedAt: 1 },
+    })
+    expect(entry.nip05).toBe('alice@example.com')
+  })
+
+  // --- M4: pinKen runs the SAME provenance validation + MAX_CORROBORATIONS cap as import --------
+  it('rejects a malformed primary provenance (bad source)', () => {
+    const { pk } = freshKeypair()
+    expect(() =>
+      pinKen({
+        pubkeyHex: pk,
+        ownerPubkeyHex: OWNER,
+        provenance: { source: 'telepathy' as never, locator: 'x', confirmedAt: 1 },
+      }),
+    ).toThrow(/provenance.source invalid/)
+  })
+
+  it('rejects more than MAX_CORROBORATIONS supplied corroborations', () => {
+    const { pk } = freshKeypair()
+    const many = Array.from({ length: MAX_CORROBORATIONS + 1 }, () => ({
+      source: 'web' as const,
+      locator: 'x',
+      confirmedAt: 1,
+    }))
+    expect(() =>
+      pinKen({
+        pubkeyHex: pk,
+        ownerPubkeyHex: OWNER,
+        provenance: { source: 'manual', locator: 'x', confirmedAt: 1 },
+        corroborations: many,
+      }),
+    ).toThrow(/at most 64 corroborations/)
+  })
+
+  it('accepts exactly MAX_CORROBORATIONS supplied corroborations', () => {
+    const { pk } = freshKeypair()
+    const many = Array.from({ length: MAX_CORROBORATIONS }, () => ({
+      source: 'web' as const,
+      locator: 'x',
+      confirmedAt: 1,
+    }))
+    expect(() =>
+      pinKen({
+        pubkeyHex: pk,
+        ownerPubkeyHex: OWNER,
+        provenance: { source: 'manual', locator: 'x', confirmedAt: 1 },
+        corroborations: many,
+      }),
+    ).not.toThrow()
+  })
+
+  // --- M5: pinKen rejects the reserved companion: locator on first-party creation ---------------
+  it('rejects a companion:-prefixed locator on the primary provenance', () => {
+    const { pk } = freshKeypair()
+    expect(() =>
+      pinKen({
+        pubkeyHex: pk,
+        ownerPubkeyHex: OWNER,
+        provenance: { source: 'manual', locator: 'companion:fake', confirmedAt: 1 },
+      }),
+    ).toThrow(/reserved.*companion:/i)
+  })
+
+  it('rejects a companion:-prefixed locator in a supplied corroboration', () => {
+    const { pk } = freshKeypair()
+    expect(() =>
+      pinKen({
+        pubkeyHex: pk,
+        ownerPubkeyHex: OWNER,
+        provenance: { source: 'manual', locator: 'x', confirmedAt: 1 },
+        corroborations: [{ source: 'web', locator: 'companion:fake', confirmedAt: 1 }],
+      }),
+    ).toThrow(/reserved.*companion:/i)
   })
 })
 
@@ -324,6 +470,25 @@ describe('pinKenFromNip05', () => {
     expect(entry.pubkey).toBe(pk)
   })
 
+  it('case-folds BOTH halves before querying/looking up (L2 audit finding) — Bob@X matches a server publishing bob/x', async () => {
+    const { pk } = freshKeypair()
+    let requestedUrl = ''
+    const fetch = (async (input: string | URL | Request) => {
+      requestedUrl = String(input)
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ names: { bob: pk } }), // server publishes lowercase
+        json: async () => ({ names: { bob: pk } }),
+      } as Response
+    }) as typeof globalThis.fetch
+    const entry = await pinKenFromNip05('Bob@Example.Com', OWNER, fetch)
+    expect(entry.pubkey).toBe(pk)
+    // The query param is lowercased too.
+    expect(requestedUrl).toContain('name=bob')
+    expect(requestedUrl).toContain('example.com')
+  })
+
   it('throws when the name is present but not 64-hex', async () => {
     const fetch = fakeFetchJson({ names: { alice: 'not-a-valid-pubkey' } })
     await expect(pinKenFromNip05('alice@example.com', OWNER, fetch)).rejects.toThrow()
@@ -345,18 +510,28 @@ describe('pinKenFromNip05', () => {
     await expect(pinKenFromNip05('alice@example.com', OWNER, fetch)).rejects.toThrow()
   })
 
-  it('requests the well-known nostr.json over HTTPS only (no http scheme path)', async () => {
+  it('requests the well-known nostr.json over HTTPS only, with redirects disabled (L1 audit finding)', async () => {
     // NIP-05 carries no scheme — the resolver MUST construct an https:// URL. Assert it does by
-    // capturing the URL the injected fetch is asked for.
+    // capturing the URL + options the injected fetch is asked for.
     const { pk } = freshKeypair()
     let requestedUrl = ''
-    const fetch = (async (input: string | URL | Request) => {
+    let requestedInit: RequestInit | undefined
+    const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       requestedUrl = String(input)
-      return { ok: true, status: 200, json: async () => ({ names: { alice: pk } }) } as Response
+      requestedInit = init
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ names: { alice: pk } }),
+        json: async () => ({ names: { alice: pk } }),
+      } as Response
     }) as typeof globalThis.fetch
     await pinKenFromNip05('alice@example.com', OWNER, fetch)
     expect(requestedUrl.startsWith('https://')).toBe(true)
     expect(requestedUrl).toContain('/.well-known/nostr.json?name=alice')
+    // NIP-05 requires fetchers to ignore redirects; a bounded timeout guards against a stalled server.
+    expect(requestedInit?.redirect).toBe('error')
+    expect(requestedInit?.signal).toBeInstanceOf(AbortSignal)
   })
 
   it('throws on a malformed nip05 (no @, or empty local/domain)', async () => {
@@ -424,6 +599,68 @@ describe('resolveKen — re-resolves nip05; proposes rotation but never auto-fli
     expect(out).toBe(entry) // same reference — no work done
     expect(called).toBe(false) // and no network call attempted
   })
+
+  // --- L3: revoked entries are never proposed a rotation ------------------------------------------
+  it('returns the entry UNCHANGED (no network call) when it is revoked', async () => {
+    const { pk } = freshKeypair()
+    const rotated = freshKeypair()
+    const entry: KenEntry = {
+      ...pinKen({
+        pubkeyHex: pk,
+        ownerPubkeyHex: OWNER,
+        nip05: 'alice@example.com',
+        provenance: { source: 'nip05', locator: 'alice@example.com', confirmedAt: 1 },
+      }),
+      revoked: true,
+    }
+    let called = false
+    const fetch = (async () => {
+      called = true
+      return { ok: true, status: 200, json: async () => ({ names: { alice: rotated.pk } }) } as Response
+    }) as typeof globalThis.fetch
+    const out = await resolveKen(entry, fetch)
+    expect(out).toBe(entry)
+    expect(called).toBe(false)
+  })
+
+  // --- H3: a rollback to a previously-rotated-away key is flagged, not proposed as an ordinary
+  //         rotation ------------------------------------------------------------------------------
+  describe('rollback detection (H3 audit finding)', () => {
+    it('flags rotation.rollback:true when the resolved key is already in previousPubkeys', async () => {
+      const k1 = freshKeypair() // rotated away from
+      const k2 = freshKeypair() // current pin
+      const entry: KenEntry = {
+        ...pinKen({
+          pubkeyHex: k2.pk,
+          ownerPubkeyHex: OWNER,
+          nip05: 'alice@example.com',
+          provenance: { source: 'nip05', locator: 'alice@example.com', confirmedAt: 1 },
+        }),
+        previousPubkeys: [k1.pk],
+      }
+      // A compromised/reverted domain re-serves the OLD (rotated-away) key.
+      const fetch = fakeFetchJson({ names: { alice: k1.pk } })
+      const out = await resolveKen(entry, fetch)
+      expect(out.pubkey).toBe(k2.pk) // still NOT auto-flipped
+      expect(out.rotation).toBeDefined()
+      expect(out.rotation!.newPubkey).toBe(k1.pk)
+      expect(out.rotation!.rollback).toBe(true)
+    })
+
+    it('does NOT flag rollback for an ordinary forward rotation to a never-seen key', async () => {
+      const original = freshKeypair()
+      const rotated = freshKeypair()
+      const entry = pinKen({
+        pubkeyHex: original.pk,
+        ownerPubkeyHex: OWNER,
+        nip05: 'alice@example.com',
+        provenance: { source: 'nip05', locator: 'alice@example.com', confirmedAt: 1 },
+      })
+      const fetch = fakeFetchJson({ names: { alice: rotated.pk } })
+      const out = await resolveKen(entry, fetch)
+      expect(out.rotation!.rollback).toBeUndefined()
+    })
+  })
 })
 
 // --- acceptKenRotation ----------------------------------------------------------------------------
@@ -473,6 +710,80 @@ describe('acceptKenRotation — explicit, user-confirmed pin move (no dual-accep
   it('throws when there is no pending rotation', () => {
     const { pk } = freshKeypair()
     expect(() => acceptKenRotation(pinManual(pk))).toThrow()
+  })
+
+  // --- H2: replay / idempotency-safety -------------------------------------------------------------
+  it('throws when the rotation has ALREADY been accepted — a second accept() call never double-appends the current pubkey into previousPubkeys', () => {
+    const original = freshKeypair()
+    const rotated = freshKeypair()
+    const proposed: KenEntry = {
+      ...pinManual(original.pk),
+      rotation: { newPubkey: rotated.pk, observedAt: 1, via: 'nip05', accepted: false },
+    }
+    const accepted = acceptKenRotation(proposed)
+    expect(accepted.previousPubkeys).toEqual([original.pk])
+
+    // A double-click / re-invoked accept on the SAME (now-accepted) entry — `resolveKen` deliberately
+    // leaves an accepted rotation in place, so this shape is exactly what a replay looks like.
+    expect(() => acceptKenRotation(accepted)).toThrow(/already been accepted/)
+
+    // And crucially: the CURRENT key (rotated.pk) is never appended into previousPubkeys, so
+    // attribution for the legitimate current key keeps working.
+    const newEvent = signEvent(rotated.sk, 'still the current key')
+    expect(attributeSignature(accepted, newEvent)).toEqual({ ok: true })
+  })
+
+  it('throws when rotation.newPubkey equals the current pin (degenerate self-rotation)', () => {
+    const { pk } = freshKeypair()
+    const entry: KenEntry = {
+      ...pinManual(pk),
+      rotation: { newPubkey: pk, observedAt: 1, via: 'manual', accepted: false },
+    }
+    expect(() => acceptKenRotation(entry)).toThrow(/equals the current pin/)
+  })
+
+  // --- H3: rollback requires an explicit allowRevert override ---------------------------------------
+  describe('rollback rotations require { allowRevert: true }', () => {
+    it('REFUSES a rollback rotation by default', () => {
+      const k1 = freshKeypair()
+      const k2 = freshKeypair()
+      const entry: KenEntry = {
+        ...pinManual(k2.pk, { previousPubkeys: [k1.pk] }),
+        rotation: { newPubkey: k1.pk, observedAt: 1, via: 'nip05', accepted: false, rollback: true },
+      }
+      expect(() => acceptKenRotation(entry)).toThrow(/allowRevert/)
+      expect(() => acceptKenRotation(entry, { allowRevert: false })).toThrow(/allowRevert/)
+    })
+
+    it('ACCEPTS a rollback rotation when { allowRevert: true } is passed, and keeps previousPubkeys internally consistent', () => {
+      const k1 = freshKeypair()
+      const k2 = freshKeypair()
+      const entry: KenEntry = {
+        ...pinManual(k2.pk, { previousPubkeys: [k1.pk] }),
+        rotation: { newPubkey: k1.pk, observedAt: 1, via: 'nip05', accepted: false, rollback: true },
+      }
+      const accepted = acceptKenRotation(entry, { allowRevert: true })
+      expect(accepted.pubkey).toBe(k1.pk)
+      // k1 is filtered OUT of previousPubkeys (it's now the current pin again) and k2 is appended —
+      // without this, k1 would sit in BOTH `pubkey` and `previousPubkeys`, and attributeSignature
+      // would then wrongly reject the legitimate current key as 'rotated-away-key'.
+      expect(accepted.previousPubkeys).toEqual([k2.pk])
+
+      const currentEvent = signEvent(k1.sk, 'current key statement')
+      expect(attributeSignature(accepted, currentEvent)).toEqual({ ok: true })
+      const oldEvent = signEvent(k2.sk, 'now-rotated-away statement')
+      expect(attributeSignature(accepted, oldEvent)).toEqual({ ok: false, reason: 'rotated-away-key' })
+    })
+
+    it('does NOT require allowRevert for an ordinary (non-rollback) rotation', () => {
+      const original = freshKeypair()
+      const rotated = freshKeypair()
+      const entry: KenEntry = {
+        ...pinManual(original.pk),
+        rotation: { newPubkey: rotated.pk, observedAt: 1, via: 'nip05', accepted: false },
+      }
+      expect(() => acceptKenRotation(entry)).not.toThrow()
+    })
   })
 })
 
@@ -535,6 +846,34 @@ describe('addCorroboration', () => {
     const next = addCorroboration(addCorroboration(pinManual(pk), dns), later)
     expect(next.corroborations).toHaveLength(2)
     expect(next.corroborations![1].confirmedAt).toBe(later.confirmedAt)
+  })
+
+  // --- M4: same validation + cap as pinKen/import -------------------------------------------------
+  it('rejects a malformed provenance (bad source)', () => {
+    const { pk } = freshKeypair()
+    expect(() =>
+      addCorroboration(pinManual(pk), { source: 'telepathy' as never, locator: 'x', confirmedAt: 1 }),
+    ).toThrow(/provenance.source invalid/)
+  })
+
+  it('rejects growing past MAX_CORROBORATIONS', () => {
+    const { pk } = freshKeypair()
+    let entry = pinManual(pk)
+    for (let i = 0; i < MAX_CORROBORATIONS; i++) {
+      entry = addCorroboration(entry, { source: 'web', locator: `x${i}`, confirmedAt: 1 })
+    }
+    expect(entry.corroborations).toHaveLength(MAX_CORROBORATIONS)
+    expect(() => addCorroboration(entry, { source: 'web', locator: 'one-too-many', confirmedAt: 1 })).toThrow(
+      /at most 64 corroborations/,
+    )
+  })
+
+  // --- M5: rejects the reserved companion: locator ------------------------------------------------
+  it('rejects a companion:-prefixed locator', () => {
+    const { pk } = freshKeypair()
+    expect(() =>
+      addCorroboration(pinManual(pk), { source: 'web', locator: 'companion:fake', confirmedAt: 1 }),
+    ).toThrow(/reserved.*companion:/i)
   })
 })
 
@@ -647,10 +986,13 @@ describe('summarizeKenProvenance', () => {
     expect(s.claimed).toBe(3)         // …but every single record is a relayed claim
     expect(s.confirmations - s.claimed).toBe(0) // nothing confirmed first-hand
 
-    // A genuinely mixed record separates cleanly.
-    const mixed = addCorroboration(pinManual(pk), {
-      source: 'dns', locator: 'companion:Evil:wren.example.org', confirmedAt: 2,
-    })
+    // A genuinely mixed record separates cleanly. Built directly (not via `addCorroboration`,
+    // which — post-M5 — refuses a `companion:`-prefixed locator on a first-party path; a
+    // `companion:`-namespaced corroboration only ever arrives via `landReturnedKen`, ./companion-rail).
+    const mixed: KenEntry = {
+      ...pinManual(pk),
+      corroborations: [{ source: 'dns', locator: 'companion:Evil:wren.example.org', confirmedAt: 2 }],
+    }
     const m = summarizeKenProvenance(mixed)
     expect(m.confirmations).toBe(2)
     expect(m.claimed).toBe(1)
