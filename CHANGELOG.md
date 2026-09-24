@@ -247,7 +247,12 @@ this section, and the individually marked entries in the sections after it.
   dependency bump that changes them fails the build). `scripts/check-vectors.mjs`
   now fails on unrecognised vector prefixes, requires and counts each
   `malformedEnvelopes` item, and checks that revocation clears `pairing` and cannot
-  be undone by a newer snapshot.
+  be undone by a newer snapshot. `vectors/invite.v2.json` gains cases that freeze
+  the canonical JSON escaping (non-ASCII, `"`, `\`, control characters, and the
+  characters `JSON.stringify` leaves raw), generated from hand-written canonical
+  text by `scripts/gen-invite-escape-vectors.mjs`.
+- **README/llms.txt** show the current `disclosureFor(filter)` and
+  `buildBondRevocation({ subjectPubHex, reason? })` signatures.
 
 ### Notes
 
