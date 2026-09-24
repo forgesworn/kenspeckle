@@ -232,6 +232,37 @@ this section, and the individually marked entries in the sections after it.
 - **L11 — `dependabot.yml`'s `nostr-tools` ignore-rule comment corrected:** it
   claimed "repos pin 2.23.9", but the actual devDependency here is `^2.24.1`.
 
+### Added
+
+- **`./bond` — ceremony counter derivation.** `deriveCeremonyCounter(nonceAHex,
+  nonceBHex)` resolves the core-M4 open question below: both bond-ceremony
+  parties derive the SAME `counter` from their two handshake nonces
+  (`SHA-256(utf8('kindred:bond:counter') ‖ 0x00 ‖ lo ‖ hi)`, `lo`/`hi` the
+  ascending-byte-order pair; digest's first 4 bytes as a big-endian uint32),
+  symmetric in argument order. New const `CEREMONY_COUNTER_TAG`.
+  `timeCounter(nowSec, periodSec)` supports a later time-bucketed
+  re-verification (`Math.floor(nowSec / periodSec)`, clamped to uint32). New
+  frozen vector `vectors/bond.counter.v1.json` (independently computed with
+  python3 `hashlib`, wired into `scripts/check-vectors.mjs`). See PROTOCOL.md
+  §2 and §7.1.
+- **`./bond` — spoken-word normalisation.** `normalizeSpokenWord(s)` (NFKC +
+  trim + lowercase) is now applied to `spoken` inside `verifyBondWord` before
+  the constant-time compare, so "Fruit ", " FRUIT" and "fruit" all verify
+  identically — spoken-token's own wordlist is already lowercase, so this only
+  forgives how a human said or typed the word back.
+- **`./discovery` — `parseFilterPublicationResult(event, opts?)`.** Additive
+  alongside `parseFilterPublication`: returns `{ ok: true, value } | { ok:
+  false, reason: FilterPublicationRejection }`, naming which of the 15 checks
+  failed instead of collapsing every rejection to `null`.
+  `parseFilterPublication` is now a thin wrapper over this (`r.ok ? r.value :
+  null`) — its behaviour is unchanged.
+- **Packaging.** `exports` gains `"./package.json"`. New `test:coverage`
+  (`vitest run --coverage`, via new devDependency `@vitest/coverage-v8`) and
+  `lint:package` (`publint && attw --pack . --profile esm-only`, via new
+  devDependencies `publint` and `@arethetypeswrong/cli`) scripts. CI now runs
+  the full suite on Node 22 **and** 24, plus `lint:package` and `npm pack
+  --dry-run`.
+
 ### Fixed
 
 - **L12 — README:** the `.` API table now lists
@@ -265,9 +296,11 @@ this section, and the individually marked entries in the sections after it.
   all-or-nothing, a backup holding either fails to restore as a whole.
 - Existing encrypted backups remain readable. Invites built by 0.1.x (v1) are no
   longer accepted and must be re-issued.
-- Open question (core-M4): PROTOCOL.md calls the handshake nonce a "ceremony counter
-  seed" but specifies no derivation from the two nonces to a spoken-word counter.
-  kenspeckle implements none; the counter stays the consumer's choice.
+- Resolved (core-M4): PROTOCOL.md called the handshake nonce a "ceremony counter
+  seed" but specified no derivation from the two nonces to a spoken-word counter.
+  This is now `deriveCeremonyCounter` (see Added, above, and PROTOCOL.md §7.1);
+  a consumer doing an in-person ceremony should use it instead of picking its
+  own counter.
 
 ## [0.1.0] — Unreleased
 

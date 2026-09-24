@@ -168,6 +168,26 @@ The namespace is overridable via an optional `opts` argument for
   match to a counter window; with `tolerance > 0` every candidate counter is checked
   with a constant-time compare and the verdicts are OR-accumulated **without
   early-return**, so timing does not leak **which** counter matched beyond `ok`.
+- **`verifyBondWord` normalises `spoken`** via `normalizeSpokenWord` (NFKC + trim +
+  lowercase) before the constant-time compare, so "Fruit ", " FRUIT" and "fruit" all
+  verify identically — forgiving how a human said or typed a word back, not the
+  wordlist itself (`spoken-token`'s wordlist is already all-lowercase).
+- **Choosing `counter`.** kenspeckle takes `counter` as a plain parameter and does not
+  pick one for you; how you pick it matters:
+  - An **in-person ceremony** (both parties physically present, exchanging fresh
+    handshake nonces) **SHOULD** use `deriveCeremonyCounter(nonceA, nonceB)` — see §7.1 —
+    with `tolerance: 0`. Both parties derive the SAME counter from the SAME
+    ceremony-fresh nonces without needing a synchronised clock or an out-of-band
+    agreement on which counter to use, and a counter tied to fresh nonces cannot be
+    predicted before the handshake or replayed against a different ceremony.
+  - A **later re-verification** (no fresh handshake nonces on hand — e.g. re-checking
+    an existing bond some time after the original ceremony) **MAY** use
+    `timeCounter(nowSec, periodSec)` (§7.1) with a small `tolerance` for clock skew,
+    mirroring `signet-me`'s own time-bucketed counter (§2.1).
+  - A **fixed counter is NOT RECOMMENDED**: a word derived from a counter that never
+    advances can be overheard once and replayed indefinitely — the counter's whole
+    purpose is to make a captured word stop working. Prefer `deriveCeremonyCounter`
+    (ceremony-scoped) or `timeCounter` (time-scoped) over a constant.
 
 ### 2.1 signet-me compatibility (migration continuity)
 
@@ -597,12 +617,46 @@ The frozen vector is `vectors/handshake.v1.json`: exact build bytes for given
 inputs (including extra fields that must be dropped) and inputs that MUST be
 rejected.
 
-**Open question — the nonce.** This section calls the nonce the "ceremony counter
-seed", but no derivation from the two peers' nonces to a spoken-word `counter` is
-specified, and §2 says the counter is the consumer's choice. kenspeckle
-implements no such derivation. Until one is specified, the nonce is only
-freshness that a consumer may use; two consumers will not agree on a counter from
-it without an out-of-band convention.
+### 7.1 Ceremony counter (`deriveCeremonyCounter`, `timeCounter`)
+
+This section calls the nonce the "ceremony counter seed" — `deriveCeremonyCounter`
+(`./bond`) is that derivation: it turns the two peers' handshake nonces into the
+`counter` §2's `bondWords` / `verifyBondWord` take, so both peers agree on a counter
+without a synchronised clock or an out-of-band convention.
+
+```
+CEREMONY_COUNTER_TAG = 'kindred:bond:counter'
+
+lo, hi  = the two 16-byte nonces (nonceAHex, nonceBHex), lowercased, in ascending
+          byte order — equivalently, ascending lowercase-hex-string order, since
+          two hex strings of the same length sort byte-for-byte
+digest  = SHA-256( utf8(CEREMONY_COUNTER_TAG) ‖ 0x00 ‖ lo ‖ hi )
+counter = digest[0..4] read as a big-endian uint32   // unsigned, 0..0xFFFFFFFF
+```
+
+`deriveCeremonyCounter(nonceAHex, nonceBHex)`:
+
+- Each nonce **MUST** be exactly 32 hex chars (case-insensitive; lowercased before
+  use), else throws `deriveCeremonyCounter: nonce must be 32 hex chars`.
+- The two (lowercased) nonces **MUST differ**, else throws
+  `deriveCeremonyCounter: nonces must differ` (a ceremony needs two independently
+  generated nonces; a repeated nonce means one side echoed the other's, or a fixed
+  test value leaked into production).
+- **Symmetric**: `deriveCeremonyCounter(nonceA, nonceB) === deriveCeremonyCounter(nonceB, nonceA)`
+  — the (lo, hi) normalisation is on the nonce **values**, not the caller's argument
+  order, so either peer can compute it from `(their nonce, my nonce)` and land on the
+  identical counter.
+- Domain-separated from `KINDRED_BOND_NAMESPACE` (the spoken-token namespace, §2):
+  `CEREMONY_COUNTER_TAG` is a distinct tag for a distinct construction (a SHA-256
+  digest of two nonces, not an HMAC over a shared secret), so the two have no
+  collision surface with each other.
+
+`timeCounter(nowSec, periodSec)` supports the **later re-verification** case (§2):
+`Math.floor(nowSec / periodSec)`, clamped to the uint32 counter range. `periodSec`
+must be a positive safe integer and `nowSec` a finite number `>= 0`, else throws;
+the result throws if it exceeds `0xFFFFFFFF`.
+
+See §2's "Choosing `counter`" guidance for when to use which.
 
 ---
 
@@ -790,6 +844,7 @@ stops an app claiming a future confirmation to poison recency reasoning.
 | Constant | Value | Where |
 |----------|-------|-------|
 | `KINDRED_BOND_NAMESPACE` | `"kindred:bond"` | `./bond` |
+| `CEREMONY_COUNTER_TAG` | `"kindred:bond:counter"` | `./bond` |
 | `KINDRED_FILTER_KIND` | `30444` (provisional; matches @forgesworn/tessera-kit) | `./discovery` |
 | `KINDRED_OPTOUT_KIND` | `30445` (provisional) | `./discovery` |
 | bond attestation kind | `31000` (`nostr-attestations` `ATTESTATION_KIND`) | `./bond`, `./invite` |

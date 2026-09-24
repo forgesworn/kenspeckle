@@ -221,6 +221,23 @@ migrated contact can cross-verify with an un-migrated peer; defaults
 (`'kindred:bond'` + `tolerance 0`) keep the existing behaviour but
 **differ** from signet-me's words.
 
+`deriveCeremonyCounter(nonceAHex, nonceBHex)` → `number` — the `counter` for an
+**in-person** bond ceremony: both parties derive the SAME counter from their two
+handshake nonces (SHA-256, domain-tagged `CEREMONY_COUNTER_TAG`), symmetric in
+argument order. `timeCounter(nowSec, periodSec)` → `number` — `Math.floor(nowSec /
+periodSec)`, clamped to uint32, for a later re-verification (no fresh nonces on
+hand). A fixed `counter` is **not recommended** — see PROTOCOL.md §2.
+`normalizeSpokenWord(s)` → `string` — NFKC + trim + lowercase; `verifyBondWord`
+already applies this to `spoken` before comparing, so callers don't need to.
+
+```typescript
+import { deriveCeremonyCounter } from '@forgesworn/kenspeckle/bond'
+
+// Both handshake nonces are exchanged already (see the kith example above).
+const counter = deriveCeremonyCounter(myNonceHex, theirs.nonce) // same value on both sides
+const { mine } = bondWords(secret, myPubHex, theirs.pubkey, counter)
+```
+
 ### `./ken`
 
 `pinKen(p)` / `pinKenFromNip05(nip05, ownerPubkeyHex, fetch)` (refuse-on-mismatch
@@ -285,7 +302,10 @@ Schnorr sig, **and** — `opts.requireAuthorIsSigner`, default `true`, since 0.2
 that the event's signer IS the in-blob signer, so the namespace/serverId the event
 asserts are transitively bound to what the server signed; pass `{
 requireAuthorIsSigner: false }` to opt out for a different trust model. Returns
-`null`, never throws); `aggregatorQuery(namespace)`; `buildOptOutRequest(p,
+`null`, never throws); `parseFilterPublicationResult(event, opts?)` → `{ ok: true,
+value } | { ok: false, reason: FilterPublicationRejection }` — the same checks as
+`parseFilterPublication`, but naming WHICH one failed instead of collapsing to
+`null` (`parseFilterPublication` is now a thin wrapper over this); `aggregatorQuery(namespace)`; `buildOptOutRequest(p,
 memberPrivHex)`. Re-exports `parseFilter` from `@forgesworn/tessera-kit`. Consts
 `KINDRED_FILTER_KIND = 30444`, `KINDRED_OPTOUT_KIND = 30445`.
 
