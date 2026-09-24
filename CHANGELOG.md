@@ -6,9 +6,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.2.0] — Unreleased
 
-Security-audit fix pass over `ken`/`discovery`/`model`/`validate`/`types`, plus
-packaging and CI hardening. Findings below are from an internal audit; the
+Security-audit fix pass over `ken`/`discovery`/`model`/`validate`/`types` and
+over `handshake`/`bond`/`invite`/`grant-envelope`/`backup`/`companion-rail`, plus
+packaging and CI hardening. Findings below are from two internal audits; the
 `H`/`M`/`L` labels are severity (High/Medium/Low), not part of any public API.
+Labels prefixed `core-` come from the second audit (the ceremony/rail modules) and
+are numbered independently.
 
 ### Security (breaking)
 
@@ -33,6 +36,55 @@ packaging and CI hardening. Findings below are from an internal audit; the
   `{ salt? }`.** The old signature derived `keyed` from salt PRESENCE, a second
   source of truth that could disagree with the filter's own `keyed` flag. Callers
   pass the filter object they already have after `parseFilter`.
+
+- **core-H2 — invites are now `v: 2` with an injective signing encoding.** The
+  digest is `sha256(utf8(JSON.stringify(["kenspeckle-invite", 2, namespace,
+  serverId, inviterPubkey, nonce, expiresAt ?? null])))`. The v1 colon-joined
+  digest was not injective: an invite signed for `("game", "eu:prod")` verified as
+  `("game:eu", "prod")`. **v1 invites are rejected** (no fallback). Strings with
+  lone surrogates are rejected at build and parse. Frozen vector
+  `vectors/invite.v2.json` includes that cross-field shift as a negative case.
+- **core-L5 — invite field hygiene.** The nonce must be at least 16 bytes of hex
+  (new `generateInviteNonce()`), `expiresAt` a non-negative safe integer, and
+  `parseJoinInvite` accepts only lowercase `inviterPubkey`/`nonce`/`sig` (one wire
+  spelling per invite). `buildJoinInvite` takes an optional `now` and refuses an
+  already-expired invite. Dedupe on `(inviterPubkey, nonce)` for one-time invites.
+- **core-H1/L4 — `verifyBondAttestation(event, now?)` rejects revoked, expired,
+  not-yet-active and self-attestations** (via nostr-attestations `isValid`), requires
+  exactly one `p` tag and a `d` tag of `kindred-bond:<subject>`, lowercases both
+  returned pubkeys, and returns a `reason` on failure (types
+  `BondAttestationResult`/`BondAttestationRejection`).
+- **core-M3 — `retractBondAssertion(assertion, { attesterPubHex, subjectPubHex })`**
+  now needs the attestation's address, validates `mineId` as 64-hex and emits
+  `["e", mineId]`, `["a", "31000:<attester>:kindred-bond:<subject>"]` and
+  `["k", "31000"]`. It is a supplement to the new **`buildBondRevocation`**
+  (`./bond`), a kind-31000 `status:revoked` event via nostr-attestations
+  `createRevocation`, which is now the primary retraction.
+- **core-M1/M2 — companion rail: revocation is terminal, timestamps are safe
+  integers.** Once `state.revoked` is true, `applyCompanionSnapshot` ignores every
+  later envelope (a re-pair starts from a fresh state), and a revocation applies even
+  when its `publishedAt` is not newer. `publishedAt`/`addedAt` must be non-negative
+  safe integers; `1e400` (`Infinity`) used to freeze the rail and block revocation.
+- **core-L6 — `parseGrantEnvelope` consistency.** Lowercases hex, strips
+  control/bidi characters from `displayName`/`nip05`, returns a projected `scope`,
+  drops contacts outside the envelope's own scope, and reads at most
+  `GRANT_CONTACTS_CAP` (5000) contacts.
+- **core-M5 — builders serialise an allowlist, never the caller's object.**
+  `buildHandshakePayload`, `buildPairingAck`, `buildGrantEnvelope` and
+  `serializeJoinInvite` copy only declared fields, so an extra property on a
+  non-literal argument (a private key, say) no longer reaches the wire.
+  `buildHandshakePayload`/`buildGrantEnvelope` also throw on anything the peer's
+  parser would reject.
+- **core-L7 — `parsePairingRequest` is strict.** `t` must be plain digits; only
+  `signet-grant:`/`https:` (or a bare query) are accepted; `#fragment`s are ignored;
+  input is capped at `PAIRING_INPUT_MAX` (4096) and the challenge at
+  `PAIRING_CHALLENGE_MAX` (128) hex characters, also in `buildPairingUri` and
+  `parsePairingAck`; a non-finite or negative `nowSec`/`freshnessSeconds` throws
+  instead of silently disabling the freshness check.
+- **core-L9 — `parseHandshakePayload` rejects** pubkeys that are not valid curve
+  points, duplicate personas, and a persona equal to the presenting pubkey.
+- **core-L1 — `bondWords` throws** for non-64-hex pubkeys, a self-bond and an empty
+  namespace; `verifyBondWord` returns `{ ok: false }` for them instead of throwing.
 
 ### Security
 
@@ -117,6 +169,19 @@ packaging and CI hardening. Findings below are from an internal audit; the
   type-check, so a `@ts-expect-error`/`expectTypeOf` in a test file would never
   actually run — same reasoning as the pre-existing `_WireAnnotationsExclusionCheck`).
 
+- **core-L8 — invisible characters are stripped from the `companion:<appName>`
+  locator segment** (word joiner, BOM, tag characters), and rail display text is
+  truncated by code point. Claimed `nip05` values on the return rail now go
+  through the strict `validateNip05` rather than a local permissive regex.
+- **core-L10 — encrypted backups carry a version header.** Written as
+  `"KSBK" ‖ 0x01 ‖ nonce ‖ ciphertext` with the header bound as AAD
+  (`BACKUP_FORMAT_VERSION`). Existing header-less backups are still read, so the
+  backup key must not be reused elsewhere (SECURITY.md §13).
+- **core-L3 — `deriveBondSecret` no longer makes an unused, wiped byte copy of the
+  key**, and the docs no longer claim zeroization for it.
+- **core-L2 — spoken-word guessing odds documented** (SECURITY.md §10): one word is
+  11 bits, so a guess succeeds with about `(2t + 1) / 2048` at tolerance `t`.
+
 ### Packaging & CI
 
 - **H1 — `@forgesworn/tessera-kit` stays a pinned git dependency** (a decision,
@@ -154,12 +219,24 @@ packaging and CI hardening. Findings below are from an internal audit; the
   `index.ts` doc comments now say `@forgesworn/kenspeckle/ken` /
   `@forgesworn/kenspeckle/bond` (the actual package name), not bare `kenspeckle/…`.
 
+- **Vectors.** New frozen vectors `vectors/handshake.v1.json` and
+  `vectors/bond.words.v1.json` (the words pin spoken-token internals, so a
+  dependency bump that changes them fails the build). `scripts/check-vectors.mjs`
+  now fails on unrecognised vector prefixes, requires and counts each
+  `malformedEnvelopes` item, and checks that revocation clears `pairing` and cannot
+  be undone by a newer snapshot.
+
 ### Notes
 
 - No stored-entry migration is required for this release: every shape change
   (`KenRotation.rollback?`, the length caps, the `pubkey`/`previousPubkeys` and
   `pubkey`/`ownerPubkey` invariants) is additive or tightens validation of
   already-invalid shapes; a previously-valid entry remains valid.
+- Existing encrypted backups remain readable. Invites built by 0.1.x (v1) are no
+  longer accepted and must be re-issued.
+- Open question (core-M4): PROTOCOL.md calls the handshake nonce a "ceremony counter
+  seed" but specifies no derivation from the two nonces to a spoken-word counter.
+  kenspeckle implements none; the counter stays the consumer's choice.
 
 ## [0.1.0] — Unreleased
 
