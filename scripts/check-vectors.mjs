@@ -14,6 +14,11 @@
 // every migrated contact gets a DIFFERENT secret -> different spoken words -> verification breaks for
 // both parties. So this vector is frozen; a drift in the construction must fail the build.
 //
+// It also checks the other frozen wire contracts: bond spoken words (`bond.words.*`), the invite v2
+// signing encoding (`invite.*`), the handshake bytes (`handshake.*`) and the companion rail
+// (`companion-rail.*`, `companion-return.*`). A vector file with any other prefix is an error, not
+// silently skipped.
+//
 // Exits non-zero on ANY mismatch or malformation (strict -- this gates releases).
 
 import { readdirSync, readFileSync } from 'node:fs'
@@ -22,9 +27,12 @@ import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
 import { schnorr } from '@noble/curves/secp256k1.js'
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js'
 
-import { deriveBondSecret } from '../dist/bond.js'
+import { bondWords, deriveBondSecret, verifyBondWord } from '../dist/bond.js'
+import { buildHandshakePayload, parseHandshakePayload } from '../dist/handshake.js'
+import { parseJoinInvite, serializeJoinInvite } from '../dist/invite.js'
 import {
   RETURN_ADDITIONS_CAP,
   RETURN_CORROBORATIONS_CAP,
@@ -56,6 +64,36 @@ if (files.length === 0) {
 
 const failures = []
 let assertionCount = 0
+
+const KNOWN_PREFIXES = ['bond.ecdh.', 'bond.words.', 'invite.', 'handshake.', 'companion-rail.', 'companion-return.']
+for (const fileName of files) {
+  if (!KNOWN_PREFIXES.some((prefix) => fileName.startsWith(prefix))) {
+    failures.push({ fileName, message: 'Unrecognised vector file prefix (it would not be checked)' })
+  }
+}
+
+/** Read + JSON-parse a vector file, recording a failure and returning undefined on error. */
+function loadVector(fileName) {
+  try {
+    return JSON.parse(readFileSync(path.join(vectorsDir, fileName), 'utf8'))
+  } catch (error) {
+    failures.push({ fileName, message: `Failed to parse JSON: ${String(error)}` })
+    return undefined
+  }
+}
+
+/** Assert `fn` throws an error whose message contains `needle`. */
+function expectThrow(fileName, label, needle, fn) {
+  assertionCount++
+  try {
+    fn()
+    failures.push({ fileName, message: `${label}: accepted, expected rejection containing "${needle}"` })
+  } catch (error) {
+    if (!String(error?.message ?? error).includes(needle)) {
+      failures.push({ fileName, message: `${label}: rejected with "${String(error)}", expected "${needle}"` })
+    }
+  }
+}
 
 for (const fileName of files.filter((name) => name.startsWith('bond.ecdh.'))) {
   const fullPath = path.join(vectorsDir, fileName)
@@ -199,9 +237,18 @@ for (const fileName of files.filter((name) => name.startsWith('companion-rail.')
   if (
     revoked.lastPublishedAt !== vector.snapshots.revokedExpected.lastPublishedAt ||
     revoked.revoked !== vector.snapshots.revokedExpected.revoked ||
-    revoked.contacts.length !== vector.snapshots.revokedExpected.contactCount
+    revoked.contacts.length !== vector.snapshots.revokedExpected.contactCount ||
+    revoked.pairing !== undefined
   ) {
-    failures.push({ fileName, message: 'revocation transition drifted' })
+    failures.push({ fileName, message: 'revocation transition drifted (or pairing not cleared)' })
+  }
+
+  // Revocation is terminal: a NEWER non-revoked snapshot must not bring contacts back.
+  assertionCount++
+  const resurrect = JSON.parse(vector.snapshots.freshEnvelope)
+  resurrect.publishedAt = revoked.lastPublishedAt + 1
+  if (applyCompanionSnapshot(revoked, JSON.stringify(resurrect)) !== revoked) {
+    failures.push({ fileName, message: 'a post-revocation snapshot resurrected state (revocation must be terminal)' })
   }
 }
 
@@ -253,8 +300,11 @@ for (const fileName of files.filter((name) => name.startsWith('companion-return.
     failures.push({ fileName, message: 'return envelope parse drifted' })
   }
 
-  assertionCount++
+  if (!Array.isArray(vector.malformedEnvelopes) || vector.malformedEnvelopes.length === 0) {
+    failures.push({ fileName, message: 'Missing malformedEnvelopes fixture (the negative check would pass vacuously)' })
+  }
   for (const malformed of vector.malformedEnvelopes ?? []) {
+    assertionCount++
     if (parseReturnEnvelope(malformed) !== null) {
       failures.push({ fileName, message: `malformed return envelope no longer fails closed: ${malformed}` })
     }
@@ -294,6 +344,114 @@ for (const fileName of files.filter((name) => name.startsWith('companion-return.
   }
 }
 
+// Bond spoken words. Frozen against spoken-token's internals: a dependency bump that changes a word
+// changes every contact's verification words, so it must fail here rather than in the field.
+for (const fileName of files.filter((name) => name.startsWith('bond.words.'))) {
+  const vector = loadVector(fileName)
+  if (!vector) continue
+  if (!isHex64Lower(vector.secret) || !isHex64Lower(vector.pubA) || !isHex64Lower(vector.pubB) || !Array.isArray(vector.words) || vector.words.length === 0) {
+    failures.push({ fileName, message: 'Missing secret / pubA / pubB / words fixture' })
+    continue
+  }
+  for (const row of vector.words) {
+    const opts = { namespace: row.namespace }
+    assertionCount++
+    try {
+      const a = bondWords(vector.secret, vector.pubA, vector.pubB, row.counter, opts)
+      const b = bondWords(vector.secret, vector.pubB, vector.pubA, row.counter, opts)
+      if (a.mine !== row.aMine || a.theirs !== row.aTheirs || b.mine !== row.aTheirs || b.theirs !== row.aMine) {
+        failures.push({
+          fileName,
+          message:
+            `bond words drifted at ${row.namespace}#${row.counter}.\n` +
+            `  expected: A{mine:${row.aMine}, theirs:${row.aTheirs}}\n` +
+            `  actual:   A{mine:${a.mine}, theirs:${a.theirs}} B{mine:${b.mine}, theirs:${b.theirs}}`,
+        })
+      }
+      if (!verifyBondWord(vector.secret, vector.pubB, vector.pubA, row.counter, row.aMine, opts).ok) {
+        failures.push({ fileName, message: `verifyBondWord rejected the frozen word at ${row.namespace}#${row.counter}` })
+      }
+    } catch (error) {
+      failures.push({ fileName, message: `bondWords threw at ${row.namespace}#${row.counter}: ${String(error)}` })
+    }
+  }
+}
+
+// Invite v2 canonical signing encoding. The digest is recomputed HERE from the documented formula
+// (not via the library) so the vector pins the spec, and the frozen sig is reproduced with BIP-340
+// using the vector's aux randomness.
+for (const fileName of files.filter((name) => name.startsWith('invite.'))) {
+  const vector = loadVector(fileName)
+  if (!vector) continue
+  if (!isHex64Lower(vector.privkey) || !isHex64Lower(vector.inviterPubkey) || !Array.isArray(vector.cases) || !Array.isArray(vector.negatives) || vector.negatives.length === 0) {
+    failures.push({ fileName, message: 'Missing privkey / inviterPubkey / cases / negatives fixture' })
+    continue
+  }
+  assertionCount++
+  if (bytesToHex(schnorr.getPublicKey(hexToBytes(vector.privkey))) !== vector.inviterPubkey) {
+    failures.push({ fileName, message: 'inviterPubkey is not the x-only pubkey of privkey' })
+  }
+  for (const c of vector.cases) {
+    const f = c.fields
+    const canonical = JSON.stringify(['kenspeckle-invite', 2, f.namespace, f.serverId, vector.inviterPubkey, f.nonce, f.expiresAt ?? null])
+    assertionCount++
+    if (canonical !== c.canonical) {
+      failures.push({ fileName, message: `${c.name}: canonical encoding drifted.\n  expected: ${c.canonical}\n  actual:   ${canonical}` })
+    }
+    const digest = sha256(utf8ToBytes(canonical))
+    assertionCount++
+    if (bytesToHex(digest) !== c.digest) {
+      failures.push({ fileName, message: `${c.name}: digest drifted` })
+    }
+    assertionCount++
+    if (bytesToHex(schnorr.sign(digest, hexToBytes(vector.privkey), hexToBytes(vector.auxRand))) !== c.sig) {
+      failures.push({ fileName, message: `${c.name}: BIP-340 sig (fixed aux) does not reproduce` })
+    }
+    assertionCount++
+    try {
+      const parsed = parseJoinInvite(utf8ToBytes(c.wire), vector.now)
+      if (JSON.stringify(parsed) !== JSON.stringify(c.parsed)) {
+        failures.push({ fileName, message: `${c.name}: parseJoinInvite drifted` })
+      }
+      if (new TextDecoder().decode(serializeJoinInvite(parsed)) !== c.wire) {
+        failures.push({ fileName, message: `${c.name}: serializeJoinInvite bytes drifted` })
+      }
+    } catch (error) {
+      failures.push({ fileName, message: `${c.name}: parseJoinInvite threw: ${String(error)}` })
+    }
+  }
+  for (const n of vector.negatives) {
+    expectThrow(fileName, `negative "${n.name}"`, n.error, () => parseJoinInvite(utf8ToBytes(n.wire), n.now ?? vector.now))
+  }
+}
+
+// Handshake wire bytes: allowlisted fields, fixed key order, lowercase hex.
+for (const fileName of files.filter((name) => name.startsWith('handshake.'))) {
+  const vector = loadVector(fileName)
+  if (!vector) continue
+  if (!Array.isArray(vector.cases) || vector.cases.length === 0 || !Array.isArray(vector.negatives) || vector.negatives.length === 0) {
+    failures.push({ fileName, message: 'Missing cases / negatives fixture' })
+    continue
+  }
+  for (const c of vector.cases) {
+    assertionCount++
+    try {
+      const wire = new TextDecoder().decode(buildHandshakePayload(c.input))
+      if (wire !== c.wire) {
+        failures.push({ fileName, message: `${c.name}: handshake bytes drifted.\n  expected: ${c.wire}\n  actual:   ${wire}` })
+      }
+      if (JSON.stringify(parseHandshakePayload(utf8ToBytes(c.wire))) !== JSON.stringify(c.parsed)) {
+        failures.push({ fileName, message: `${c.name}: handshake parse drifted` })
+      }
+    } catch (error) {
+      failures.push({ fileName, message: `${c.name}: threw: ${String(error)}` })
+    }
+  }
+  for (const n of vector.negatives) {
+    expectThrow(fileName, `negative "${n.name}"`, n.error, () => parseHandshakePayload(utf8ToBytes(n.wire)))
+  }
+}
+
 if (failures.length > 0) {
   console.error('[vectors] Frozen golden-vector check FAILED.')
   for (const failure of failures) {
@@ -301,7 +459,7 @@ if (failures.length > 0) {
   }
   console.error(
     '[vectors] If this change is intentional, regenerate the golden vector against the new code and ' +
-      'add a CHANGELOG note — silent bond or companion-rail wire drift breaks existing consumers.',
+      'add a CHANGELOG note — silent bond, invite, handshake or companion-rail wire drift breaks existing consumers.',
   )
   process.exit(1)
 }
