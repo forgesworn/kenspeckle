@@ -85,6 +85,12 @@ export interface KenRotation {
   /** old-key-signed proof, when available */
   announcementEventId?: string
   accepted: boolean
+  /** Set when `newPubkey` is already in `previousPubkeys` — NIP-05 (or another `via`) is proposing a
+   *  ROLLBACK to a key that was rotated away from, not a forward rotation. This is the exact shape of
+   *  a compromised-domain replay (the domain operator re-serves an old, possibly-compromised key).
+   *  `resolveKen` sets this; `acceptKenRotation` refuses to accept it unless the caller passes
+   *  `{ allowRevert: true }` (H3 audit finding). */
+  rollback?: boolean
 }
 
 /** Optional, consensual, co-signed bond assertion record (§5.5). Defined in ./bond at runtime;
@@ -103,20 +109,79 @@ export type KindredEntry = KinEntry | KithEntry | KenEntry
 // Canonical nostr event/filter types — kenspeckle re-exports these aliases so consumers have ONE event type.
 export type { EventTemplate, NostrEvent, NostrFilter }
 
-/** Wire-safe view: PrivateAnnotations structurally removed (spec §4 — never serialised). */
-export type WireEntry = Omit<KindredEntry, 'annotations'>
+/** Distributive `Omit`: applies `Omit` to EACH member of a union separately, instead of collapsing
+ *  the union first. A bare `Omit<Union, K>` is NOT distributive — TS resolves `keyof Union` to the
+ *  INTERSECTION of each member's keys before omitting, so any field that isn't common to every arm
+ *  (e.g. `sharedSecret` on `KinEntry`/`KithEntry` but not `KenEntry`, or `provenance`/`relationship`)
+ *  silently vanishes from the result type, and narrowing on `tier` can no longer see it (H4/M7 audit
+ *  finding). Distributing over `T extends unknown` forces TS to apply `Omit` to each arm before
+ *  re-uniting them, so tier-specific fields stay visible after a `tier` narrow. */
+export type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
 
-// Compile-time invariant (spec §4 — annotations never on a wire). This lives in a COMPILED source
-// file, not a *.test.ts: the house tsconfig excludes `**/*.test.ts`, and vitest transpiles tests
-// with esbuild (no type-checking), so a `@ts-expect-error` placed in a test would be inert — a false
-// green. Asserting it here makes `npm run typecheck` and `npm run build` the real gate, and emits no
-// runtime JS. If WireEntry ever re-admits `annotations`, `_WireExcludesAnnotations` resolves to
-// `false`, `_Assert<false>` violates its `extends true` constraint, and the build fails (TS2344).
+/** Wire-safe view: `PrivateAnnotations` AND `sharedSecret` structurally removed. Annotations are
+ *  never serialised (spec §4). `sharedSecret` is the ECDH bond/kin secret and must NEVER be
+ *  published (README Security, this file's `MutualEntry` doc) — `toWire`/`serializeEntry` strip it
+ *  (H4 audit finding: the previous `WireEntry` only excluded `annotations`, so code following the
+ *  "wire-safe" name could leak the secret). For the ONE legitimate case that needs the secret to
+ *  travel — syncing a roster across the user's OWN devices over an already-private/authenticated
+ *  channel — use `SyncEntry` / `toSyncForm` / `serializeEntryForSync` instead, never this. */
+export type WireEntry = DistributiveOmit<KindredEntry, 'annotations' | 'sharedSecret'>
+
+/** Sync-safe view: only `PrivateAnnotations` removed (the pre-H4 `WireEntry` shape). `sharedSecret`
+ *  IS present — this form MUST only travel over a channel already private to the user's own devices
+ *  (e.g. an encrypted device-sync transport), never to a relay, a contact, or any third party. See
+ *  `toSyncForm` / `serializeEntryForSync` in `./model`. */
+export type SyncEntry = DistributiveOmit<KindredEntry, 'annotations'>
+
+// Compile-time invariants. These live in a COMPILED source file, not a *.test.ts: the house tsconfig
+// excludes `**/*.test.ts`, and vitest transpiles tests with esbuild (no type-checking), so a
+// `@ts-expect-error` placed in a test would be inert — a false green. Asserting them here makes
+// `npm run typecheck` and `npm run build` the real gate, and they emit no runtime JS.
 type _Assert<T extends true> = T
+
+// `annotations` is common to every union arm (declared on `KindredEntryBase`), so a bare
+// `keyof WireEntry` check is sufficient: if `WireEntry` ever re-admits `annotations`,
+// `_WireExcludesAnnotations` resolves to `false` and the `extends true` constraint below fails
+// (TS2344).
 type _WireExcludesAnnotations = 'annotations' extends keyof WireEntry ? false : true
-// Evaluated at its declaration site (no export needed → stays out of the public .d.ts surface):
-// if the conditional above resolves to `false`, `_Assert<false>` breaks its `extends true` constraint.
 type _WireAnnotationsExclusionCheck = _Assert<_WireExcludesAnnotations>
+
+// `sharedSecret` is declared only on `MutualEntry` (kin/kith), NOT on `KenEntry` — so it was NEVER
+// part of `keyof (KinEntry | KithEntry | KenEntry)` in the first place (`keyof` of a union is the
+// INTERSECTION of each member's keys). A bare `keyof WireEntry` check would therefore pass trivially
+// even if `sharedSecret` leaked through on the kin/kith arms — exactly the M7 unsoundness this file
+// now fixes. So this checks the MUTUAL arms directly via `Extract`.
+type _KithWireExcludesSharedSecret = 'sharedSecret' extends keyof Extract<WireEntry, { tier: 'kith' }>
+  ? false
+  : true
+type _KithWireSharedSecretExclusionCheck = _Assert<_KithWireExcludesSharedSecret>
+type _KinWireExcludesSharedSecret = 'sharedSecret' extends keyof Extract<WireEntry, { tier: 'kin' }>
+  ? false
+  : true
+type _KinWireSharedSecretExclusionCheck = _Assert<_KinWireExcludesSharedSecret>
+
+// Distributivity regression test (the actual M7 bug): after narrowing `WireEntry` to one tier, the
+// tier-specific fields that a non-distributive `Omit` would have dropped MUST still be visible.
+type _KithWireHasVerifiedAt = 'verifiedAt' extends keyof Extract<WireEntry, { tier: 'kith' }>
+  ? true
+  : false
+type _KithWireVerifiedAtCheck = _Assert<_KithWireHasVerifiedAt>
+type _KenWireHasProvenance = 'provenance' extends keyof Extract<WireEntry, { tier: 'ken' }>
+  ? true
+  : false
+type _KenWireProvenanceCheck = _Assert<_KenWireHasProvenance>
+type _KinWireHasRelationship = 'relationship' extends keyof Extract<WireEntry, { tier: 'kin' }>
+  ? true
+  : false
+type _KinWireRelationshipCheck = _Assert<_KinWireHasRelationship>
+
+// `SyncEntry` keeps `sharedSecret` on the mutual arms (only `annotations` is stripped).
+type _KithSyncHasSharedSecret = 'sharedSecret' extends keyof Extract<SyncEntry, { tier: 'kith' }>
+  ? true
+  : false
+type _KithSyncSharedSecretCheck = _Assert<_KithSyncHasSharedSecret>
+type _SyncExcludesAnnotations = 'annotations' extends keyof SyncEntry ? false : true
+type _SyncAnnotationsExclusionCheck = _Assert<_SyncExcludesAnnotations>
 
 /** Type predicate: can this entry run the spoken-token ceremony? (kin/kith carry a shared secret; ken does not.)
  *

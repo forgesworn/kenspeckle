@@ -2,12 +2,29 @@
 //
 // Pure functions over plain `KindredEntry` data. No storage, no UI, no graph traversal.
 //
-// The load-bearing privacy invariant (spec §4): `PrivateAnnotations` are LOCAL-ONLY. They are
-// searchable in-memory (`searchEntries`) but MUST NEVER be serialised onto any wire. `toWire`
-// strips them structurally and `serializeEntry` is built on top of `toWire`, so the canonical
-// JSON can never carry an `annotations` key. The encrypted self-backup (`backup.ts`) is the one
-// exception — it INCLUDES annotations because it is the user's own AES-sealed copy (§6.7), not a
-// graph disclosure.
+// TWO privacy invariants, not one:
+//   • `PrivateAnnotations` are LOCAL-ONLY (spec §4). They are searchable in-memory
+//     (`searchEntries`) but MUST NEVER be serialised onto any wire or sync form.
+//   • `sharedSecret` (the ECDH bond/kin secret) MUST NEVER be published (README Security,
+//     types.ts `MutualEntry`) — but it DOES need to travel between the user's OWN devices, or a
+//     restored kin/kith contact is useless there. These are different destinations with different
+//     trust boundaries, so they get different functions (H4 audit finding — the previous
+//     `toWire`/`WireEntry` excluded only `annotations`, so code trusting the "wire-safe" name could
+//     leak the secret to a relay/contact-sync event):
+//     - `toWire` / `serializeEntry` / `parseEntry` — TRUE wire-safe: strip BOTH `annotations` AND
+//       `sharedSecret`. Safe to hand to any third party. A kin/kith `WireEntry` therefore cannot be
+//       round-tripped back into a functioning entry via `parseEntry` (it is missing a field
+//       `validateEntryShape` requires) — that is intentional, not a bug: the secret's absence means
+//       there is nothing to reconstruct.
+//     - `toSyncForm` / `serializeEntryForSync` — KEEPS `sharedSecret` (still strips `annotations`).
+//       For the ONE legitimate case that needs the secret to travel: syncing a roster across the
+//       user's own devices over an already-private/authenticated transport. NEVER publish this
+//       output, and never hand it to anything that isn't another one of the user's own devices.
+//       `parseEntry` reconstructs this form (it requires `sharedSecret` for kin/kith either way).
+//
+// The encrypted self-backup (`backup.ts`) bypasses this module entirely — it JSON-serialises raw
+// entries (including annotations AND sharedSecret) straight into its AES-sealed blob (§6.7), so no
+// separate "backup" wire function is needed here.
 
 import { randomBytes } from '@noble/ciphers/utils.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
@@ -18,6 +35,8 @@ import type {
   KenEntry,
   PrivateAnnotations,
   WireEntry,
+  SyncEntry,
+  DistributiveOmit,
 } from './types.js'
 import { validateEntryShape } from './validate.js'
 
@@ -26,12 +45,14 @@ import { validateEntryShape } from './validate.js'
 /** Re-attach a persona pubkey as the entry owner. The input omits `ownerPubkey`; we stamp it on
  *  and return the value typed as the correct `KindredEntry` union member (tier preserved). */
 export function scopeToPersona(
-  entry: Omit<KindredEntry, 'ownerPubkey'>,
+  entry: DistributiveOmit<KindredEntry, 'ownerPubkey'>,
   personaPubkeyHex: string,
 ): KindredEntry {
-  // The spread re-introduces the only missing discriminant-independent field. Because `entry` is a
-  // distributed `Omit` over the union, `{...entry, ownerPubkey}` is assignable back to the union.
-  return { ...entry, ownerPubkey: personaPubkeyHex } as KindredEntry
+  // The spread re-introduces the only missing discriminant-independent field. `entry` is a
+  // genuinely DISTRIBUTED `Omit` over the union (see `DistributiveOmit` in types.ts — a bare
+  // `Omit<Union, K>` is NOT distributive and silently drops tier-specific fields; M7 audit finding),
+  // so `{...entry, ownerPubkey}` is directly assignable back to the union with no cast.
+  return { ...entry, ownerPubkey: personaPubkeyHex }
 }
 
 /** Throw unless `personaPubkeyHex` is one of MY persona leaves (case-insensitive membership).
@@ -92,10 +113,23 @@ export function unlink(entries: KindredEntry[], pubkey: string): void {
 
 // --- wire form + canonical serialization (spec §4, §12.1) ------------------------------------
 
-/** Shallow copy with `annotations` structurally removed. Typed `WireEntry`. */
+/** Shallow copy with `annotations` AND `sharedSecret` structurally removed. Typed `WireEntry`.
+ *  Safe to hand to any third party (H4 audit finding — see the module note above). A `KenEntry` has
+ *  no `sharedSecret` to begin with, so `delete` on that tier is a no-op. */
 export function toWire(e: KindredEntry): WireEntry {
-  const { annotations: _drop, ...wire } = e
-  return wire
+  const { annotations: _drop, ...rest } = e
+  const wire = rest as Record<string, unknown>
+  delete wire.sharedSecret
+  return wire as unknown as WireEntry
+}
+
+/** Shallow copy with only `annotations` structurally removed — `sharedSecret` is PRESERVED. Typed
+ *  `SyncEntry`. MUST only be transmitted over a channel already private to the user's own devices
+ *  (e.g. an encrypted device-sync transport). NEVER publish this output, and never hand it to
+ *  anything other than another one of the user's own devices — see the module note above. */
+export function toSyncForm(e: KindredEntry): SyncEntry {
+  const { annotations: _drop, ...sync } = e
+  return sync
 }
 
 /** Recursively sort object keys so two devices serialise identical bytes (cross-device sync,
@@ -116,13 +150,28 @@ function stableSort(value: unknown): unknown {
 }
 
 /** Canonical, byte-stable JSON of `toWire(e)` with recursively-sorted keys. The output NEVER
- *  contains an `annotations` key — `toWire` strips it AND `stableSort` only emits present keys. */
+ *  contains an `annotations` OR a `sharedSecret` key — `toWire` strips both AND `stableSort` only
+ *  emits present keys. Safe to hand to any third party. For kin/kith, this output is deliberately
+ *  NOT a full round-trip: `parseEntry` requires `sharedSecret` for those tiers, so re-parsing a
+ *  wire-form kin/kith throws (there is nothing to reconstruct without the secret) — see
+ *  `serializeEntryForSync` for the form that does round-trip. */
 export function serializeEntry(e: KindredEntry): string {
   return JSON.stringify(stableSort(toWire(e)))
 }
 
-/** Parse untrusted wire JSON into a typed `KindredEntry`, running full field guards (signet-app
- *  untrusted-input discipline). Does NOT restore annotations — wire form never carried them. */
+/** Canonical, byte-stable JSON of `toSyncForm(e)` with recursively-sorted keys — KEEPS
+ *  `sharedSecret`. The output NEVER contains an `annotations` key. MUST only be transmitted over a
+ *  channel already private to the user's own devices; `parseEntry` reconstructs this form (it
+ *  requires `sharedSecret` for kin/kith regardless of which serializer produced its input). */
+export function serializeEntryForSync(e: KindredEntry): string {
+  return JSON.stringify(stableSort(toSyncForm(e)))
+}
+
+/** Parse untrusted JSON into a typed `KindredEntry`, running full field guards (signet-app
+ *  untrusted-input discipline). Does NOT restore annotations — neither serialised form carries
+ *  them. Reconstructs `serializeEntryForSync`'s output; a kin/kith `serializeEntry` (true wire form)
+ *  input throws here, because `sharedSecret` is required for those tiers and the wire form omits it
+ *  by design (see the module note above). */
 export function parseEntry(s: string): KindredEntry {
   let raw: unknown
   try {
