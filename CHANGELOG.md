@@ -148,6 +148,16 @@ this section, and the individually marked entries in the sections after it.
   `bob`.
 - **BREAKING — L3 — `resolveKen` no longer proposes a rotation for a `revoked` entry.**
   Returns it unchanged (no network call), matching the no-`nip05` case.
+- **BREAKING — `acceptKenRotation` now refuses a `revoked` entry.** Throws `ken:
+  cannot accept a rotation on a revoked entry`, checked FIRST — before the
+  no-pending-rotation check — mirroring `attributeSignature`/`verifyKeyControl`,
+  which both check `revoked` before anything else. Previously there was no
+  `entry.revoked` guard at all: given an entry that was BOTH revoked and carried
+  a pending rotation (proposed before the revoke, or hand-built), `acceptKenRotation`
+  would silently move the pin to `rotation.newPubkey` and mark the rotation
+  accepted, with no explicit un-revoke step — a revoked pin has no business
+  adopting a new key. A caller that genuinely wants to un-revoke and rotate must
+  now do so explicitly (clear `revoked` first).
 - **L4 — `verifyKeyControl` gains opt-in `opts` for partial verifier/freshness
   binding** (`expectedCreatedAt`/`maxAgeSec`/`verifierTag`), documented as a
   partial mitigation for a relay/phishing-verifier attack; the full fix needs a

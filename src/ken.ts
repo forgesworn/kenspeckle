@@ -550,7 +550,13 @@ export async function resolveKen(
  * This is intentionally a separate, explicit step from `resolveKen` (which only proposes): adopting a
  * new key for a recognised public figure is a security-relevant decision the user must confirm.
  *
- * FAIL-CLOSED GUARDS (H2/H3 audit findings):
+ * FAIL-CLOSED GUARDS (H2/H3 audit findings, and the revoked guard below):
+ *   • `entry.revoked === true`             → throws, CHECKED FIRST — mirrors `attributeSignature` /
+ *     `verifyKeyControl`, which both check `revoked` before anything else. A revoked pin announces a
+ *     compromise with no successor (see `revokeKen`); silently moving it to a NEW pubkey — even one
+ *     `resolveKen` proposed BEFORE the revoke — would resurrect a dead pin under a key nobody
+ *     explicitly re-confirmed. Un-revoking is a separate, explicit decision this function does not
+ *     make on the caller's behalf.
  *   • `rotation.accepted === true`         → throws. Without this, calling accept a SECOND time on
  *     an entry whose accepted rotation `resolveKen` deliberately left in place (see its doc comment)
  *     would append the now-CURRENT pubkey into `previousPubkeys` again, and `attributeSignature`
@@ -567,6 +573,11 @@ export async function resolveKen(
  *         `newPubkey`.
  */
 export function acceptKenRotation(entry: KenEntry, opts?: { allowRevert?: boolean }): KenEntry {
+  // Checked FIRST, mirroring attributeSignature/verifyKeyControl: a revoked pin proves nothing and
+  // adopts nothing — see the FAIL-CLOSED GUARDS note above.
+  if (entry.revoked) {
+    throw new Error('ken: cannot accept a rotation on a revoked entry')
+  }
   if (!entry.rotation) {
     throw new Error('ken: no pending rotation to accept')
   }
