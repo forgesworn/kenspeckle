@@ -460,3 +460,130 @@ describe('return rail', () => {
     expect(() => landReturnedKen({ pubkey: KEN }, { appName: 'A', ownerPubkeyHex: 'nope', nowSec: NOW })).toThrow(/64-hex/)
   })
 })
+
+describe('snapshot reducer — revocation is terminal (M1)', () => {
+  const scope = { tiers: ['kin'] as const, personas: 'all' as const }
+  const contacts = [{ pubkey: APP, ownerPubkey: OWNER, tier: 'kin' as const, relationship: 'child' as const, addedAt: 50 }]
+  const paired: CompanionSnapshotState = {
+    pairing: { railPubkey: RAIL, dTag: SNAPSHOT_D_TAG, snapshotRelay: RELAY, grantedScope: { tiers: ['kin'], personas: 'all' }, pairedAt: 100 },
+    contacts: [],
+    lastPublishedAt: 100,
+  }
+
+  it('a later non-revoked snapshot does NOT resurrect contacts after a revocation', () => {
+    const revoked = applyCompanionSnapshot(paired, buildGrantEnvelope(scope, [], 102, { revoked: true }))
+    const after = applyCompanionSnapshot(revoked, buildGrantEnvelope(scope, contacts, 103))
+    expect(after).toBe(revoked)
+    expect(after.contacts).toEqual([])
+    expect(after.revoked).toBe(true)
+    expect(after.pairing).toBeUndefined()
+  })
+
+  it('a fresh state after re-pairing accepts snapshots again', () => {
+    const repaired: CompanionSnapshotState = { ...paired, lastPublishedAt: undefined, revoked: false }
+    expect(applyCompanionSnapshot(repaired, buildGrantEnvelope(scope, contacts, 1)).contacts).toEqual(contacts)
+  })
+})
+
+describe('snapshot reducer — publishedAt must be a safe integer (M2)', () => {
+  const paired: CompanionSnapshotState = { contacts: [], lastPublishedAt: 100 }
+  const envelope = (publishedAt: string, revoked = false) =>
+    `{"v":1,"scope":{"tiers":["kin"],"personas":"all"},"contacts":[],"publishedAt":${publishedAt}${revoked ? ',"revoked":true' : ''}}`
+
+  it.each(['1e400', '-5', '5.5', '9007199254740993', '"200"'])('ignores an envelope with publishedAt=%s', (value) => {
+    expect(applyCompanionSnapshot(paired, envelope(value))).toBe(paired)
+  })
+
+  it('an Infinity snapshot can no longer freeze the rail and block revocation', () => {
+    const afterBad = applyCompanionSnapshot(paired, envelope('1e400'))
+    expect(afterBad.lastPublishedAt).toBe(100)
+    expect(applyCompanionSnapshot(afterBad, envelope('101', true)).revoked).toBe(true)
+  })
+
+  it('a revocation applies even when a far-future snapshot was accepted first', () => {
+    const future = applyCompanionSnapshot(paired, envelope('9000000000'))
+    expect(future.lastPublishedAt).toBe(9_000_000_000)
+    const revoked = applyCompanionSnapshot(future, envelope('101', true))
+    expect(revoked.revoked).toBe(true)
+    expect(revoked.contacts).toEqual([])
+    expect(revoked.lastPublishedAt).toBe(9_000_000_000)
+  })
+})
+
+describe('buildPairingAck — explicit allowlist (M5)', () => {
+  const ack: PairingAck = {
+    v: 1,
+    railPubkey: RAIL,
+    dTag: SNAPSHOT_D_TAG,
+    snapshotRelay: RELAY,
+    grantedScope: { tiers: ['kin'], personas: 'all' },
+    challenge: CHALLENGE,
+  }
+
+  it('drops fields outside the ack shape, including nested scope extras', () => {
+    const leaky = { ...ack, railPrivkey: 'LEAK', grantedScope: { ...ack.grantedScope, secret: 's' } } as PairingAck
+    const json = buildPairingAck(leaky)
+    expect(json).not.toContain('LEAK')
+    expect(json).not.toContain('secret')
+    expect(JSON.parse(json)).toEqual(ack)
+  })
+
+  it('rejects an empty or non-hex challenge (build and parse)', () => {
+    expect(() => buildPairingAck({ ...ack, challenge: '' })).toThrow(/invalid pairing ack/)
+    expect(() => buildPairingAck({ ...ack, challenge: 'zz'.repeat(16) })).toThrow(/invalid pairing ack/)
+    expect(parsePairingAck(JSON.stringify({ ...ack, challenge: '' }), '')).toBeNull()
+  })
+})
+
+describe('parsePairingRequest — strict parsing (L7)', () => {
+  const base = `app=${APP}&name=App&scope=kin&relay=${encodeURIComponent(RELAY)}&challenge=${CHALLENGE}`
+
+  it.each(['0x6553F100', '1e9', ' 1700000000 ', '+1700000000', '1700000000.0'])('rejects t=%s', (t) => {
+    const r = parsePairingRequest(`signet-grant://pair?${base}&t=${encodeURIComponent(t)}`, { nowSec: NOW })
+    expect(r).toEqual({ request: null, warnings: ['bad-timestamp'] })
+  })
+
+  it('throws on a NaN / negative freshness window instead of disabling the check', () => {
+    const uri = `signet-grant://pair?${base}&t=${NOW}`
+    expect(() => parsePairingRequest(uri, { nowSec: NOW, freshnessSeconds: Number.NaN })).toThrow(/freshness/)
+    expect(() => parsePairingRequest(uri, { nowSec: NOW, freshnessSeconds: -1 })).toThrow(/freshness/)
+    expect(() => parsePairingRequest(uri, { nowSec: Number.NaN })).toThrow(/nowSec/)
+  })
+
+  it('does not fold a #fragment into the last parameter', () => {
+    const r = parsePairingRequest(`signet-grant://pair?${base}&t=${NOW}#extra`, { nowSec: NOW })
+    expect(r.request?.t).toBe(NOW)
+    const r2 = parsePairingRequest(`signet-grant://pair?t=${NOW}&${base}#frag`, { nowSec: NOW })
+    expect(r2.request?.challenge).toBe(CHALLENGE)
+  })
+
+  it('accepts only signet-grant: or https: before the query (or a bare query)', () => {
+    expect(parsePairingRequest(`javascript:alert(1)?${base}&t=${NOW}`, { nowSec: NOW })).toEqual({ request: null, warnings: ['bad-scheme'] })
+    expect(parsePairingRequest(`http://evil.example/?${base}&t=${NOW}`, { nowSec: NOW }).warnings).toEqual(['bad-scheme'])
+    expect(parsePairingRequest(`${base}&t=${NOW}`, { nowSec: NOW }).request?.appPubkey).toBe(APP)
+  })
+
+  it('caps the challenge length and the input length', () => {
+    const long = 'a'.repeat(130)
+    const r = parsePairingRequest(`signet-grant://pair?${base.replace(CHALLENGE, long)}&t=${NOW}`, { nowSec: NOW })
+    expect(r.warnings).toEqual(['bad-challenge'])
+    expect(() => buildPairingUri({ appPubkey: APP, appName: 'App', scope: 'kin', relay: RELAY, nowSec: NOW, challenge: long })).toThrow(/challenge/)
+    const huge = `signet-grant://pair?${base}&t=${NOW}&pad=${'x'.repeat(5000)}`
+    expect(parsePairingRequest(huge, { nowSec: NOW })).toEqual({ request: null, warnings: ['malformed'] })
+  })
+})
+
+describe('landReturnedKen — invisible characters in the appName locator segment (L8)', () => {
+  it('strips word-joiner / BOM / tag characters so a lookalike cannot render as another app', () => {
+    const landed = landReturnedKen({ pubkey: APP }, { appName: 'Signet\u2060\uFEFF\u{E0041}', ownerPubkeyHex: OWNER, nowSec: NOW })
+    expect(landed.provenance.locator).toBe('companion:Signet')
+  })
+
+  it('slices the app name by code point (never splits a surrogate pair)', () => {
+    const name = 'a'.repeat(63) + '\u{1F600}'
+    const landed = landReturnedKen({ pubkey: APP }, { appName: name, ownerPubkeyHex: OWNER, nowSec: NOW })
+    expect(landed.provenance.locator).toBe(`companion:${name}`)
+    const tooLong = landReturnedKen({ pubkey: APP }, { appName: 'a'.repeat(64) + '\u{1F600}', ownerPubkeyHex: OWNER, nowSec: NOW })
+    expect(tooLong.provenance.locator).toBe(`companion:${'a'.repeat(64)}`)
+  })
+})

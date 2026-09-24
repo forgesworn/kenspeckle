@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { toGrantView, buildGrantEnvelope, parseGrantEnvelope } from './grant-envelope.js'
+import { toGrantView, buildGrantEnvelope, parseGrantEnvelope, GRANT_CONTACTS_CAP } from './grant-envelope.js'
 import type { KinEntry, KithEntry, KenEntry } from './types.js'
 import type { GrantScope, GrantContactView } from './grant-envelope.js'
 
@@ -84,5 +84,85 @@ describe('grant envelope round-trip', () => {
     const parsed = parseGrantEnvelope(raw)
     expect(parsed?.contacts).toHaveLength(1)
     expect(parsed?.contacts[0].relationship).toBeUndefined()
+  })
+})
+
+describe('grant envelope — timestamps (M2)', () => {
+  const env = (publishedAt: string) => `{"v":1,"scope":{"tiers":["kin"],"personas":"all"},"contacts":[],"publishedAt":${publishedAt}}`
+
+  it.each(['1e400', '-1', '1.5', '9007199254740993', 'null'])('rejects publishedAt=%s', (value) => {
+    expect(parseGrantEnvelope(env(value))).toBeNull()
+  })
+
+  it('drops a contact whose addedAt is not a non-negative safe integer', () => {
+    const raw = JSON.stringify({ v: 1, scope, publishedAt: 1, contacts: [
+      { pubkey: 'a'.repeat(64), ownerPubkey: 'b'.repeat(64), tier: 'kin', addedAt: -5.5 },
+    ] }).replace('-5.5', '1e400')
+    expect(parseGrantEnvelope(raw)?.contacts).toEqual([])
+  })
+
+  it('build refuses a non-integer or negative publishedAt', () => {
+    for (const bad of [Number.POSITIVE_INFINITY, -1, 1.5, Number.NaN]) {
+      expect(() => buildGrantEnvelope(scope, [], bad)).toThrow(/publishedAt/)
+    }
+  })
+})
+
+describe('grant envelope — build projects an allowlist (M5)', () => {
+  it('never serialises fields outside GrantContactView / GrantScope', () => {
+    const leakyView = { ...views[0]!, sharedSecret: 'LEAK' } as GrantContactView
+    const leakyScope = { ...scope, secret: 'S' } as GrantScope
+    const json = buildGrantEnvelope(leakyScope, [leakyView], 1)
+    expect(json).not.toContain('LEAK')
+    expect(json).not.toContain('secret')
+  })
+
+  it('throws when a contact would be dropped by the parser (out of scope / bad key)', () => {
+    const kithView: GrantContactView = { pubkey: 'c'.repeat(64), ownerPubkey: 'b'.repeat(64), tier: 'ken', addedAt: 1 }
+    expect(() => buildGrantEnvelope(scope, [kithView], 1)).toThrow(/survive/)
+    expect(() => buildGrantEnvelope(scope, [{ ...views[0]!, pubkey: 'x' }], 1)).toThrow(/survive/)
+  })
+
+  it('throws past the contacts cap', () => {
+    const many = Array.from({ length: GRANT_CONTACTS_CAP + 1 }, () => views[0]!)
+    expect(() => buildGrantEnvelope(scope, many, 1)).toThrow(/at most/)
+  })
+})
+
+describe('grant envelope — parse consistency (L6)', () => {
+  it('strips control / bidi characters from displayName (as the companion rail does)', () => {
+    const raw = JSON.stringify({ v: 1, scope, publishedAt: 1, contacts: [
+      { pubkey: 'a'.repeat(64), ownerPubkey: 'b'.repeat(64), tier: 'kith', addedAt: 1, displayName: 'evil\u202Egnp.exe' },
+    ] })
+    expect(parseGrantEnvelope(raw)?.contacts[0]?.displayName).toBe('evilgnp.exe')
+  })
+
+  it('lowercases uppercase hex instead of silently dropping the contact', () => {
+    const raw = JSON.stringify({ v: 1, scope, publishedAt: 1, contacts: [
+      { pubkey: 'A'.repeat(64), ownerPubkey: 'B'.repeat(64), tier: 'kith', addedAt: 1 },
+    ] })
+    expect(parseGrantEnvelope(raw)?.contacts).toEqual([{ pubkey: 'a'.repeat(64), ownerPubkey: 'b'.repeat(64), tier: 'kith', addedAt: 1 }])
+  })
+
+  it('returns a projected scope (unknown keys dropped)', () => {
+    const raw = JSON.stringify({ v: 1, scope: { ...scope, extra: 1 }, publishedAt: 1, contacts: [] })
+    expect(parseGrantEnvelope(raw)?.scope).toEqual(scope)
+  })
+
+  it('drops contacts outside the declared scope (tier or owner persona)', () => {
+    const owner = 'b'.repeat(64)
+    const other = 'e'.repeat(64)
+    const raw = JSON.stringify({ v: 1, scope: { tiers: ['kin'], personas: [owner] }, publishedAt: 1, contacts: [
+      { pubkey: 'a'.repeat(64), ownerPubkey: owner, tier: 'kith', addedAt: 1 }, // kith under kin-only scope
+      { pubkey: 'c'.repeat(64), ownerPubkey: other, tier: 'kin', addedAt: 1 }, // owner not in personas
+      { pubkey: 'd'.repeat(64), ownerPubkey: owner, tier: 'kin', addedAt: 1 }, // in scope
+    ] })
+    expect(parseGrantEnvelope(raw)?.contacts.map((c) => c.pubkey)).toEqual(['d'.repeat(64)])
+  })
+
+  it('reads at most GRANT_CONTACTS_CAP contacts', () => {
+    const contact = { pubkey: 'a'.repeat(64), ownerPubkey: 'b'.repeat(64), tier: 'kin', addedAt: 1 }
+    const raw = JSON.stringify({ v: 1, scope, publishedAt: 1, contacts: Array(GRANT_CONTACTS_CAP + 10).fill(contact) })
+    expect(parseGrantEnvelope(raw)?.contacts).toHaveLength(GRANT_CONTACTS_CAP)
   })
 })

@@ -5,7 +5,7 @@
 // Kenspeckle owns only the bytes and state transition they must agree on.
 
 import type { GrantContactView, GrantScope } from './grant-envelope.js'
-import { parseGrantEnvelope } from './grant-envelope.js'
+import { cleanDisplayText, parseGrantEnvelope } from './grant-envelope.js'
 import { COMPANION_LOCATOR_PREFIX } from './types.js'
 import type { KenEntry, KenProvenance } from './types.js'
 import { validateProvenance } from './validate.js'
@@ -21,12 +21,14 @@ export const RETURN_ADDITIONS_CAP = 50
 /** Bound one ken's claimed evidence so a single addition cannot carry an unbounded array. */
 export const RETURN_CORROBORATIONS_CAP = 8
 
+/** Longest pairing challenge accepted (hex chars). The ack echoes it verbatim, so it is bounded. */
+export const PAIRING_CHALLENGE_MAX = 128
+/** Longest pairing input (URI / query / carrier URL) parsed at all — a cheap DoS guard. */
+export const PAIRING_INPUT_MAX = 4096
+
 const HEX64 = /^[0-9a-f]{64}$/
-const CHALLENGE_HEX = /^[0-9a-f]{16,}$/i
+const CHALLENGE_HEX = new RegExp(`^[0-9a-f]{16,${PAIRING_CHALLENGE_MAX}}$`, 'i')
 const TIERS = ['kin', 'kith', 'ken'] as const
-// Same display-boundary class used by Signet. Strip before trim before slice.
-// eslint-disable-next-line no-control-regex
-const CONTROL_BIDI = /[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2066-\u2069]/g
 
 export type CompanionTier = (typeof TIERS)[number]
 
@@ -85,7 +87,9 @@ export function buildPairingUri(opts: PairingUriOptions): string {
   if (!HEX64.test(opts.appPubkey)) throw new TypeError('companion rail: app pubkey must be lowercase 64-hex')
   if (!isValidCompanionRelayUrl(opts.relay)) throw new TypeError('companion rail: invalid relay URL')
   if (!Number.isInteger(opts.nowSec) || opts.nowSec < 0) throw new TypeError('companion rail: invalid timestamp')
-  if (!CHALLENGE_HEX.test(opts.challenge)) throw new TypeError('companion rail: invalid challenge')
+  if (typeof opts.challenge !== 'string' || !CHALLENGE_HEX.test(opts.challenge)) {
+    throw new TypeError('companion rail: invalid challenge')
+  }
 
   const scope = typeof opts.scope === 'string' ? opts.scope : opts.scope.join(',')
   const params = new URLSearchParams()
@@ -107,11 +111,37 @@ export function parsePairingRequest(
   input: string,
   opts: { nowSec?: number; freshnessSeconds?: number } = {},
 ): PairingRequestResult {
+  // Caller-supplied options are a programmer's values, not wire input: reject them loudly. A NaN
+  // freshness would otherwise make `Math.abs(now - t) > NaN` false and silently disable the check.
+  if (opts.nowSec !== undefined && (!Number.isSafeInteger(opts.nowSec) || opts.nowSec < 0)) {
+    throw new TypeError('companion rail: nowSec must be a non-negative integer')
+  }
+  if (
+    opts.freshnessSeconds !== undefined &&
+    (!Number.isFinite(opts.freshnessSeconds) || opts.freshnessSeconds < 0)
+  ) {
+    throw new TypeError('companion rail: freshnessSeconds must be a finite non-negative number')
+  }
+
   const warnings: string[] = []
+  if (typeof input !== 'string' || input.length > PAIRING_INPUT_MAX) {
+    return { request: null, warnings: ['malformed'] }
+  }
+  // A `#fragment` is never part of the query (it would otherwise fold into the last parameter).
+  const hashIndex = input.indexOf('#')
+  const body = hashIndex >= 0 ? input.slice(0, hashIndex) : input
+  const qIndex = body.indexOf('?')
+  // With a `?`, the part before it must be the native scheme or an HTTPS carrier; without one, the
+  // whole input is a bare query.
+  if (qIndex >= 0) {
+    const prefix = body.slice(0, qIndex)
+    if (!prefix.toLowerCase().startsWith(PAIRING_SCHEME) && !/^https:\/\//i.test(prefix)) {
+      return { request: null, warnings: ['bad-scheme'] }
+    }
+  }
   let params: URLSearchParams
   try {
-    const qIndex = input.indexOf('?')
-    params = new URLSearchParams(qIndex >= 0 ? input.slice(qIndex + 1) : input)
+    params = new URLSearchParams(qIndex >= 0 ? body.slice(qIndex + 1) : body)
   } catch {
     return { request: null, warnings: ['malformed'] }
   }
@@ -122,8 +152,10 @@ export function parsePairingRequest(
   const rendezvousRelay = params.get('relay') ?? ''
   if (!isValidCompanionRelayUrl(rendezvousRelay)) return { request: null, warnings: ['bad-relay'] }
 
-  const t = Number(params.get('t'))
-  if (!Number.isInteger(t) || t < 0) return { request: null, warnings: ['bad-timestamp'] }
+  // Plain decimal digits only: `Number()` would also accept `0x…`, `1e9` and padded whitespace.
+  const tRaw = params.get('t') ?? ''
+  const t = /^\d{1,15}$/.test(tRaw) ? Number(tRaw) : Number.NaN
+  if (!Number.isSafeInteger(t)) return { request: null, warnings: ['bad-timestamp'] }
   const nowSec = opts.nowSec ?? Math.floor(Date.now() / 1000)
   const freshnessSeconds = opts.freshnessSeconds ?? DEFAULT_PAIRING_FRESHNESS_SECONDS
   if (Math.abs(nowSec - t) > freshnessSeconds) return { request: null, warnings: ['stale-timestamp'] }
@@ -138,7 +170,7 @@ export function parsePairingRequest(
   if (rawScope.some((tier) => !TIERS.includes(tier as CompanionTier))) warnings.push('scope-unknown-token')
   if (tiers.length === 0) warnings.push('scope-empty-defaulted-all')
 
-  const appName = (params.get('name') ?? '').replace(CONTROL_BIDI, '').trim().slice(0, 64) || 'Companion app'
+  const appName = cleanText(params.get('name'), 64) ?? 'Companion app'
   return {
     request: {
       appPubkey,
@@ -152,12 +184,21 @@ export function parsePairingRequest(
   }
 }
 
-/** Build the JSON plaintext encrypted into the ephemeral kind-21237 ack. */
+/**
+ * Build the JSON plaintext encrypted into the ephemeral kind-21237 ack.
+ *
+ * Serialises the PARSED projection (`v, railPubkey, dTag, snapshotRelay, grantedScope, challenge` —
+ * declared keys only, `grantedScope` rebuilt), never the caller's object: a non-literal argument
+ * carrying a `railPrivkey` or extra scope keys would otherwise go straight onto the wire. Throws on
+ * anything the consumer's `parsePairingAck` would reject, including an empty or non-hex challenge.
+ */
 export function buildPairingAck(ack: PairingAck): string {
-  if (!parsePairingAck(JSON.stringify(ack), ack.challenge)) {
-    throw new TypeError('companion rail: invalid pairing ack')
-  }
-  return JSON.stringify(ack)
+  const projected =
+    typeof ack === 'object' && ack !== null && typeof ack.challenge === 'string'
+      ? parsePairingAck(JSON.stringify(ack), ack.challenge)
+      : null
+  if (!projected) throw new TypeError('companion rail: invalid pairing ack')
+  return JSON.stringify(projected)
 }
 
 /** Parse and validate a decrypted ack, including challenge and grant scope. */
@@ -173,7 +214,9 @@ export function parsePairingAck(plaintext: string, expectedChallenge: string): P
   if (ack.v !== 1) return null
   if (typeof ack.railPubkey !== 'string' || !HEX64.test(ack.railPubkey)) return null
   if (typeof ack.snapshotRelay !== 'string' || !isValidCompanionRelayUrl(ack.snapshotRelay)) return null
-  if (typeof ack.challenge !== 'string' || ack.challenge !== expectedChallenge) return null
+  if (typeof ack.challenge !== 'string' || !CHALLENGE_HEX.test(ack.challenge) || ack.challenge !== expectedChallenge) {
+    return null
+  }
 
   const grantedScope = parseGrantScope(ack.grantedScope)
   if (!grantedScope) return null
@@ -193,11 +236,24 @@ export function parsePairingAck(plaintext: string, expectedChallenge: string): P
 /**
  * Apply a decrypted snapshot monotonically. Malformed/stale envelopes return
  * the exact input object. A revocation purges contacts and pairing state.
+ *
+ * Revocation is TERMINAL for the pairing: once `state.revoked === true` every
+ * later envelope — however new — returns the exact input object, so a
+ * non-revoked snapshot can never bring contacts back. Resuming requires a new
+ * pairing ceremony, after which the app starts from a fresh state (new
+ * `pairing`, `revoked: false`, no `lastPublishedAt`).
+ *
+ * A revocation applies even if its `publishedAt` is not newer than the last
+ * snapshot: a producer clock error that published a far-future snapshot must
+ * not be able to block the owner's revocation. (`publishedAt` itself must be a
+ * non-negative safe integer or the envelope is malformed — see
+ * `parseGrantEnvelope`.) The consumer MUST have checked that the event was
+ * signed by `pairing.railPubkey` before calling this.
  */
 export function applyCompanionSnapshot<T extends CompanionSnapshotState>(state: T, envelopeJson: string): T {
   const envelope = parseGrantEnvelope(envelopeJson)
   if (!envelope) return state
-  if (state.lastPublishedAt !== undefined && envelope.publishedAt <= state.lastPublishedAt) return state
+  if (state.revoked === true) return state
 
   if (envelope.revoked === true) {
     return {
@@ -205,9 +261,11 @@ export function applyCompanionSnapshot<T extends CompanionSnapshotState>(state: 
       pairing: undefined,
       contacts: [],
       revoked: true,
-      lastPublishedAt: envelope.publishedAt,
+      lastPublishedAt: Math.max(state.lastPublishedAt ?? 0, envelope.publishedAt),
     }
   }
+
+  if (state.lastPublishedAt !== undefined && envelope.publishedAt <= state.lastPublishedAt) return state
 
   return {
     ...state,
@@ -252,12 +310,9 @@ export interface ReturnEnvelope {
   additions: WireKen[]
 }
 
-/** Sanitise app-supplied display text at the trust boundary (strip → trim → slice, as §7.1). */
-function cleanText(value: unknown, max: number): string | undefined {
-  if (typeof value !== 'string') return undefined
-  const out = value.replace(CONTROL_BIDI, '').trim().slice(0, max)
-  return out.length > 0 ? out : undefined
-}
+/** Sanitise app-supplied display text at the trust boundary (strip → trim → slice by code point, as
+ *  §7.1). One definition, shared with the grant envelope's parser. */
+const cleanText = cleanDisplayText
 
 /**
  * The `<appName>` segment of a provenance locator, percent-escaping `%` then `:`.
@@ -277,7 +332,10 @@ function cleanText(value: unknown, max: number): string | undefined {
  * the `companion:<appName>` audit tag keeps the format already resolved in the design doc.
  */
 function appNamespace(appName: string): string {
-  return (cleanText(appName, 64) ?? 'Companion app').replaceAll('%', '%25').replaceAll(':', '%3A')
+  // `LOCATOR_UNSAFE` (not just the display class): this segment is part of a LOCATOR, and word-joiner /
+  // BOM / tag characters would otherwise let `companion:Signet\u2060` render exactly like `companion:Signet`.
+  const name = typeof appName === 'string' ? cleanText(appName.replace(LOCATOR_UNSAFE, ''), 64) : undefined
+  return (name ?? 'Companion app').replaceAll('%', '%25').replaceAll(':', '%3A')
 }
 
 /** Longest claimed locator kept. Unbounded locators are a persistent storage-amplification bug:
@@ -287,8 +345,8 @@ export const RETURN_LOCATOR_MAX = 512
 /**
  * Invisible / direction-controlling characters stripped from a CLAIMED locator.
  *
- * Wider than this module's `CONTROL_BIDI` (which is frozen: it defines already-shipped forward-rail
- * display sanitisation and is covered by the frozen vector). A locator is written by a hostile app
+ * Wider than the display class `cleanDisplayText` strips (which is frozen: it defines already-shipped
+ * forward-rail display sanitisation and is covered by the frozen vector). A locator is written by a hostile app
  * and later rendered in provenance lists and audit views, so it additionally excludes word-joiner /
  * BOM / Arabic-letter-mark / Mongolian vowel separator and the U+E0000 tag block — the standard
  * invisible-text-smuggling range. Newlines matter most: without stripping them a claim can forge an
@@ -300,7 +358,7 @@ const LOCATOR_UNSAFE = /[\x00-\x1f\x7f-\x9f\u061c\u180e\u200b-\u200f\u2028-\u202
 
 /** Sanitise a claimed locator for storage/display. Returns undefined if nothing survives. */
 function cleanLocator(value: string): string | undefined {
-  const out = value.replace(LOCATOR_UNSAFE, '').trim().slice(0, RETURN_LOCATOR_MAX)
+  const out = Array.from(value.replace(LOCATOR_UNSAFE, '').trim()).slice(0, RETURN_LOCATOR_MAX).join('')
   return out.length > 0 ? out : undefined
 }
 
