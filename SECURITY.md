@@ -77,10 +77,13 @@ verification without leaking anything derived from the secret.
 `pinKenFromNip05` resolves `https://<domain>/.well-known/nostr.json?name=<local>`
 (**HTTPS only**; no redirects, a timeout, a capped body, parsed with a strict runtime
 type guard). Every path that can reach that fetch — `pinKen`, `pinKenFromNip05`,
-`parseEntry` / `importEntries` and `resolveNip05` itself — validates the identifier
-with the strict `validateNip05`: a plain `local@hostname`, with no port, userinfo,
-path, query, fragment or IP literal, so a crafted `nip05` cannot turn resolution into
-an arbitrary-URL fetch. The companion return rail uses the same validator for claimed
+`resolveKen` and `resolveNip05` itself — validates the identifier with the strict
+`validateNip05`: a plain `local@hostname` of at least two labels whose last label is
+alphabetic or punycode (`xn--`), with no port, userinfo, path, query, fragment or IP
+literal (including shorthand such as `127.1` or `0x7f.1`), so a crafted `nip05`
+cannot turn resolution into an arbitrary-URL fetch. `parseEntry` / `importEntries`
+keep a stored `nip05` that 0.1.x accepted, but `resolveKen` treats one that fails
+`validateNip05` as unresolvable and never fetches it. The companion return rail uses the same validator for claimed
 identifiers. NIP-05 proves only
 that whoever controls that file **says** a name maps to a key. It is a DNS + TLS +
 HTTP **trust-on-first-use (TOFU)** anchor — **not** a cryptographic key-**continuity**

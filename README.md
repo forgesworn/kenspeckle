@@ -245,9 +245,12 @@ re-check a year later is new recency evidence). `summarizeKenProvenance(entry)`
 reports `{ confirmations, claimed, distinctSources, distinctLocators, sources,
 mostRecentAt, oldestAt }`.
 
-**NIP-05 handling.** Every entry point that can reach a `nip05` field (`pinKen`,
-`pinKenFromNip05`, and the parser) validates a STRICT `local@domain` shape — no
-port, no userinfo, no path/query/fragment, no bare IP literal — and the fetch is
+**NIP-05 handling.** Every entry point that can fetch a `nip05` (`pinKen`,
+`pinKenFromNip05`, `resolveKen`) validates a STRICT `local@domain` shape — no
+port, no userinfo, no path/query/fragment, and a last label that is alphabetic or
+`xn--`, so no IP literal in any form (`127.1`, `0x7f.1` included). The parser keeps
+a stored `nip05` that 0.1.x accepted; `resolveKen` treats one that fails the strict
+check as unresolvable and never fetches it. The fetch is
 hardened: `redirect:'error'` (NIP-05 requires ignoring redirects), a bounded
 timeout, a size-capped body read before `JSON.parse`, and both halves lowercased
 before querying/looking up (NIP-05 names are case-insensitive).

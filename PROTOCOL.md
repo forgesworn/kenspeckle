@@ -274,10 +274,15 @@ NIP-05 handle). No shared secret, no mutual ceremony.
 NIP-05 resolution fetches `https://<domain>/.well-known/nostr.json?name=<local>`
 (**HTTPS only**; the URL is constructed from validated parts, never reflected from
 input). Every entry point that can reach the fetch — `pinKen`, `pinKenFromNip05`,
-`parseEntry` / `importEntries`, and `resolveNip05` itself — runs the **strict**
-`validateNip05`: exactly one `@`, local part `[a-z0-9-_.]+`, and a domain that is a
-plain DNS hostname of at least two labels — no port, no userinfo, no
-path/query/fragment, no IP literal. Local part and domain are lowercased before the
+`resolveKen`, and `resolveNip05` itself — runs the **strict** `validateNip05`:
+exactly one `@`, local part `[a-z0-9-_.]+`, and a domain that is a plain DNS
+hostname of at least two labels whose last label is alphabetic (2–63 letters) or a
+punycode `xn--` label — no port, no userinfo, no path/query/fragment, and no IP
+literal in any spelling a URL parser accepts (`1.2.3.4`, `127.1`, `0x7f.1`, `10.1`
+and any all-numeric TLD are rejected). `parseEntry` / `importEntries` only
+type-check a stored `nip05` so data 0.1.x wrote still restores; `resolveKen`
+treats a stored value that fails `validateNip05` as unresolvable — it returns the
+entry unchanged and never fetches. Local part and domain are lowercased before the
 lookup. The fetch refuses redirects, has a timeout and caps the body size. The response body is attacker-influenced (the domain operator controls
 it), so it is parsed with a runtime type guard: body must be an object,
 `body.names` an object, `body.names[local]` a 64-hex string — anything else throws.
@@ -333,8 +338,10 @@ works — only `content` + sig + pubkey are inspected).
   old key. It **throws** on a replay (`rotation.accepted` already `true`, or
   `newPubkey` equal to the current pin) and on a `rollback: true` proposal unless
   `opts.allowRevert` is `true`. Accepting a revert removes the reverted-to key from
-  `previousPubkeys` first, so the current pin never also appears there (which
-  `validateEntryShape` rejects).
+  `previousPubkeys` first, so the current pin never also appears there. The accepted
+  `rotation` record is kept, so after an accept `rotation.newPubkey === pubkey` with
+  `rotation.accepted === true` — the normal post-accept state, which `parseEntry`
+  and `importEntries` accept (§6).
 - `revokeKen` sets `revoked = true` (compromise with no successor); both
   `attributeSignature` and `verifyKeyControl` then fail closed (`reason:'revoked'`,
   checked first).
@@ -632,10 +639,15 @@ Neither output ever contains an `annotations` key. The wire form never contains 
 `parseEntry` requires `sharedSecret` for those tiers and throws. `parseEntry`
 reconstructs the sync form. It runs full field guards: allow-listed tier, 64-hex
 pubkeys, `pubkey ≠ ownerPubkey`, finite timestamps, mutual-tier shared secret, ken
-provenance **and each ken corroboration** (capped at 64), strict NIP-05, a ken whose
-`pubkey` is not in its own `previousPubkeys` and whose `rotation.newPubkey` differs
-from `pubkey`, and length caps on `displayName` (256) and `annotations.note`
-(2000). It never restores annotations. A syntactically valid kith entry is a shape,
+provenance **and each ken corroboration** (capped at 64), and a **pending** rotation
+(`accepted: false`) whose `rotation.newPubkey` differs from `pubkey`; an
+**accepted** rotation may equal `pubkey` (§4.3). Parse stays tolerant of data
+0.1.x wrote: it normalises `previousPubkeys` by dropping the current `pubkey` and
+de-duplicating, drops a malformed `bondAssertion` rather than rejecting the entry,
+only type-checks `nip05` (§4.1), and applies no string length caps. The length
+caps — `displayName` 256 and `provenance.locator` 1024, both in Unicode **code
+points** — and strict NIP-05 apply on the creation paths (`pinKen`,
+`addCorroboration`, `landReturnedKen`). It never restores annotations. A syntactically valid kith entry is a shape,
 not proof a bond happened: authenticate whatever channel feeds `parseEntry`.
 
 **`corroborations` (optional, ken only).** An array of `KenProvenance` recording
@@ -663,8 +675,9 @@ kind-21237 acknowledgement; Signet then publishes encrypted kind-30078
 replaceable snapshots under `d=signet:companion-rail`.
 
 **Pairing request.** `parsePairingRequest` accepts the native
-`signet-grant:` URI, an `https:` carrier URL, or a bare query; anything else
-before a `?` is rejected (`bad-scheme`). Input longer than 4096 characters is
+`signet-grant:` URI, an `https:` carrier URL, or a bare query with or without a
+leading `?` (the `window.location.search` form); anything else before a `?` is
+rejected (`bad-scheme`). Input longer than 4096 characters is
 rejected; a `#fragment` is ignored. `t` must be plain decimal digits (no `0x`,
 exponent, sign or padding). `challenge` is 16–128 hex characters (build and
 parse). The caller's `nowSec` / `freshnessSeconds` must be finite and
@@ -693,12 +706,19 @@ and throws if a contact would not survive that parse.
 2. returns the exact input state for **anything** once `state.revoked === true`.
    **Revocation is terminal for the pairing** — a later non-revoked snapshot can
    never bring contacts back. Resuming needs a new pairing, after which the app
-   starts from a fresh state (`revoked: false`, no `lastPublishedAt`);
-3. applies a `revoked: true` tombstone **regardless of `publishedAt` order**
-   (clearing contacts and pairing, `lastPublishedAt = max(old, new)`), so a
-   producer clock error that published a far-future snapshot cannot block the
-   owner's revocation;
-4. otherwise accepts only a strictly newer `publishedAt`, returning the exact
+   starts from a fresh state (new `pairing` with a new `pairedAt`,
+   `revoked: false`, no `lastPublishedAt`);
+3. returns the exact input state for any envelope — snapshot **or** revocation —
+   whose `publishedAt` is below `pairing.pairedAt` (unix seconds; the consumer
+   sets it when the pairing is established, no later than the request's `t`).
+   A re-pair re-derives the same rail key and `d` tag, so a tombstone from an
+   earlier pairing is still validly signed; this floor stops it being replayed
+   to kill the new pairing;
+4. at or above the floor, applies a `revoked: true` tombstone **regardless of
+   `publishedAt` order relative to snapshots** (clearing contacts and pairing,
+   `lastPublishedAt = max(old, new)`), so a producer clock error that published
+   a far-future snapshot cannot block the owner's revocation;
+5. otherwise accepts only a strictly newer `publishedAt`, returning the exact
    input state for a stale one.
 
 Kenspeckle does not open relays, schedule timers, store keys, encrypt content or

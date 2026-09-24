@@ -13,7 +13,10 @@ packaging and CI hardening. Findings below are from two internal audits; the
 Labels prefixed `core-` come from the second audit (the ceremony/rail modules) and
 are numbered independently.
 
-### Security (breaking)
+Every entry that is still a breaking change is marked **BREAKING** — all of
+this section, and the individually marked entries in the sections after it.
+
+### Security — **BREAKING**
 
 - **H4 — `toWire`/`serializeEntry` now strip `sharedSecret`.** Previously only
   `annotations` was excluded, so code trusting the "wire-safe" name could publish
@@ -62,9 +65,14 @@ are numbered independently.
   `createRevocation`, which is now the primary retraction.
 - **core-M1/M2 — companion rail: revocation is terminal, timestamps are safe
   integers.** Once `state.revoked` is true, `applyCompanionSnapshot` ignores every
-  later envelope (a re-pair starts from a fresh state), and a revocation applies even
-  when its `publishedAt` is not newer. `publishedAt`/`addedAt` must be non-negative
-  safe integers; `1e400` (`Infinity`) used to freeze the rail and block revocation.
+  later envelope (a re-pair starts from a fresh state). `state.pairing.pairedAt`
+  is now a floor: any snapshot or revocation with `publishedAt` below it is
+  ignored, so a tombstone from an earlier pairing (a re-pair re-derives the same
+  rail key and `d` tag) cannot be replayed to kill the new pairing. At or above
+  the floor a revocation applies even when its `publishedAt` is not newer than
+  the last snapshot. Set `pairedAt` when the pairing is established, no later
+  than the request's `t`. `publishedAt`/`addedAt` must be non-negative safe
+  integers; `1e400` (`Infinity`) used to freeze the rail and block revocation.
 - **core-L6 — `parseGrantEnvelope` consistency.** Lowercases hex, strips
   control/bidi characters from `displayName`/`nip05`, returns a projected `scope`,
   drops contacts outside the envelope's own scope, and reads at most
@@ -76,7 +84,8 @@ are numbered independently.
   `buildHandshakePayload`/`buildGrantEnvelope` also throw on anything the peer's
   parser would reject.
 - **core-L7 — `parsePairingRequest` is strict.** `t` must be plain digits; only
-  `signet-grant:`/`https:` (or a bare query) are accepted; `#fragment`s are ignored;
+  `signet-grant:`/`https:` (or a bare query, with or without the leading `?` of
+  `window.location.search`) are accepted; `#fragment`s are ignored;
   input is capped at `PAIRING_INPUT_MAX` (4096) and the challenge at
   `PAIRING_CHALLENGE_MAX` (128) hex characters, also in `buildPairingUri` and
   `parsePairingAck`; a non-finite or negative `nowSec`/`freshnessSeconds` throws
@@ -88,36 +97,46 @@ are numbered independently.
 
 ### Security
 
-- **H2 — `acceptKenRotation` refuses a replay.** Throws if `rotation.accepted` is
+- **BREAKING — H2 — `acceptKenRotation` refuses a replay.** Throws if `rotation.accepted` is
   already `true` (a double-click / re-invoked accept could previously append the
   now-current pubkey into `previousPubkeys` again, making `attributeSignature`
   reject the legitimate current key) or if `rotation.newPubkey` equals the
   current pin. `rotation.newPubkey` is re-validated as 64-hex.
-- **H3 — a NIP-05 "rollback" to a previously-rotated-away key is flagged, not
+- **BREAKING — H3 — a NIP-05 "rollback" to a previously-rotated-away key is flagged, not
   proposed as an ordinary rotation.** `resolveKen` sets `rotation.rollback: true`
   when the resolved key is already in `previousPubkeys` (a compromised/reverted
   domain re-serving an old key). `acceptKenRotation(entry, opts)` refuses a
   flagged rollback unless `opts.allowRevert` is `true`, and — when accepted —
   removes the reverted-to key from `previousPubkeys` before re-adding the old
   current key, so the two never end up in a self-contradictory state.
-  `validateEntryShape` also rejects a stored/imported ken whose `pubkey` appears
-  in its own `previousPubkeys`, or whose `rotation.newPubkey` equals `pubkey`.
-- **M1 — strict NIP-05 validation.** `pinKen`, `pinKenFromNip05`,
-  `validateEntryShape` (parse/import), and `resolveNip05` itself (the choke
-  point) all validate a strict `local@domain` shape: no port, no userinfo, no
-  path/query/fragment, and no bare IP literal. Previously only
-  `pinKenFromNip05` validated shape at all, and even that check was permissive
-  enough (and bypassable via `pinKen`/import) that a crafted `nip05` field could
-  turn `resolveKen` into an arbitrary-URL fetch.
-- **M3 — `discoverPresent` throws if a salt is passed to an OPEN filter.**
+  `validateEntryShape` (parse/import) repairs rather than rejects a stored ken
+  whose `pubkey` appears in its own `previousPubkeys` (the state 0.1.x's H2 bug
+  wrote): it drops the current key from `previousPubkeys` and de-duplicates.
+  **BREAKING:** it rejects a **pending** rotation (`accepted: false`) whose
+  `newPubkey` equals `pubkey`. An **accepted** rotation — `acceptKenRotation`
+  leaves `rotation.newPubkey === pubkey` with `accepted: true` — parses, exports
+  and restores normally.
+- **BREAKING — M1 — strict NIP-05 validation.** `pinKen`, `pinKenFromNip05`,
+  `resolveKen` and `resolveNip05` itself (the choke point) all validate a strict
+  `local@domain` shape: at least two labels, a last label that is alphabetic
+  (2–63 letters) or punycode (`xn--`), no port, no userinfo, no
+  path/query/fragment. That rejects an IP literal in every form a URL parser
+  accepts, including shorthand such as `127.1`, `0x7f.1` and `10.1`, and any
+  all-numeric TLD. Previously only `pinKenFromNip05` validated shape at all, and
+  even that check was permissive enough (and bypassable via `pinKen`/import) that
+  a crafted `nip05` field could turn `resolveKen` into an arbitrary-URL fetch.
+  `parseEntry`/`importEntries` only type-check a stored `nip05`, so data 0.1.x
+  wrote still restores; `resolveKen` treats a stored value that fails the strict
+  check as unresolvable (returns the entry unchanged, never fetches).
+- **BREAKING — M3 — `discoverPresent` throws if a salt is passed to an OPEN filter.**
   Mirrors the existing keyed-without-salt guard: either mismatch previously
   hashed every candidate against the wrong construction and silently returned
   `[]` — a false "no friends here".
-- **M4 — `pinKen`/`addCorroboration` run the same provenance validation and
+- **BREAKING — M4 — `pinKen`/`addCorroboration` run the same provenance validation and
   `MAX_CORROBORATIONS` (64) cap as `importEntries`/`parseEntry`.** A builder
   could previously mint an entry the parser would later refuse — including one
   that exported fine but could never be restored from backup.
-- **M5 — `pinKen`/`addCorroboration` reject the reserved `companion:` locator
+- **BREAKING — M5 — `pinKen`/`addCorroboration` reject the reserved `companion:` locator
   prefix.** That prefix is reserved for `landReturnedKen` (`./companion-rail`)
   to mark a RELAYED claim; a first-party call minting one let a companion-app
   claim masquerade as a first-hand confirmation.
@@ -127,14 +146,14 @@ are numbered independently.
 - **L2 — NIP-05 case-folding.** Both the local part and domain are lowercased
   before querying/looking up, so `Bob@Example.com` matches a server publishing
   `bob`.
-- **L3 — `resolveKen` no longer proposes a rotation for a `revoked` entry.**
+- **BREAKING — L3 — `resolveKen` no longer proposes a rotation for a `revoked` entry.**
   Returns it unchanged (no network call), matching the no-`nip05` case.
 - **L4 — `verifyKeyControl` gains opt-in `opts` for partial verifier/freshness
   binding** (`expectedCreatedAt`/`maxAgeSec`/`verifierTag`), documented as a
   partial mitigation for a relay/phishing-verifier attack; the full fix needs a
   dedicated event kind (protocol-level, out of this file's scope). Also
   documents that single-use nonce tracking is the consumer's responsibility.
-- **L5 — `buildOptOutRequest` rejects a namespace containing a colon** (mirrors
+- **BREAKING — L5 — `buildOptOutRequest` rejects a namespace containing a colon** (mirrors
   `buildFilterPublication`'s d-tag misparse guard) and documents the privacy
   exposure of a public opt-out event and its lack of replay/freshness semantics.
 - **L7 — documents `parseFilterPublication`'s strict `minEpoch` (`<=`)
@@ -142,16 +161,19 @@ are numbered independently.
   indistinguishable from a forgery from the return value alone; recommends
   tracking last-OBSERVED epoch rather than last-accepted, or comparing epochs
   before calling.
-- **L8 — `validate.ts` strictness inconsistencies closed:** a malformed
-  `bondAssertion` now throws instead of being silently dropped; `pubkey ===
-  ownerPubkey` is rejected; `rotation.newPubkey === pubkey` is rejected;
-  `displayName` (256 chars), `provenance.locator` (1024 chars — see note below),
-  and `annotations.note` (2000 chars) are now length-capped, matching the
-  existing `MAX_CORROBORATIONS` cap's rationale. (`provenance.locator`'s cap is
-  enforced by callers via a new `capLocator` helper, not inside
-  `validateProvenance` itself, which `./companion-rail`'s `landReturnedKen`
-  still uses as a pre-truncation structural check on a raw, not-yet-clamped
-  claim.)
+- **BREAKING — L8 — `validate.ts` strictness inconsistencies closed.** Parse and
+  import reject a self-entry (`pubkey === ownerPubkey`) and a pending
+  self-rotation (see H3); `pinKen` and `landReturnedKen` now refuse to mint a
+  self-entry too. `displayName` (256) and `provenance.locator` (1024) are
+  length-capped on the **creation** paths — `pinKen`, `addCorroboration`,
+  `landReturnedKen` — measured everywhere in Unicode **code points** (the unit
+  the companion rail already slices by), so no builder can mint a value another
+  check calls over-length. Parse and import apply no length caps and still drop
+  (not reject) a malformed `bondAssertion`, as 0.1.x did, so a backup 0.1.x
+  wrote still restores. (`provenance.locator`'s cap is enforced via the
+  `capLocator` helper, not inside `validateProvenance` itself, which
+  `landReturnedKen` still uses as a pre-truncation structural check on a raw,
+  not-yet-clamped claim.)
 - **L9 — documents that `tier:'kith'` is a shape, not proof a bond happened.**
   `parseEntry`/`importEntries` accept any syntactically-valid `sharedSecret`;
   kenspeckle cannot authenticate a sync/import source itself, so the consumer
@@ -169,14 +191,15 @@ are numbered independently.
   type-check, so a `@ts-expect-error`/`expectTypeOf` in a test file would never
   actually run — same reasoning as the pre-existing `_WireAnnotationsExclusionCheck`).
 
-- **core-L8 — invisible characters are stripped from the `companion:<appName>`
+- **BREAKING — core-L8 — invisible characters are stripped from the `companion:<appName>`
   locator segment** (word joiner, BOM, tag characters), and rail display text is
   truncated by code point. Claimed `nip05` values on the return rail now go
   through the strict `validateNip05` rather than a local permissive regex.
-- **core-L10 — encrypted backups carry a version header.** Written as
+- **BREAKING — core-L10 — encrypted backups carry a version header.** Written as
   `"KSBK" ‖ 0x01 ‖ nonce ‖ ciphertext` with the header bound as AAD
   (`BACKUP_FORMAT_VERSION`). Existing header-less backups are still read, so the
-  backup key must not be reused elsewhere (SECURITY.md §13).
+  backup key must not be reused elsewhere (SECURITY.md §13). 0.1.x cannot read a
+  backup written by this release.
 - **core-L3 — `deriveBondSecret` no longer makes an unused, wiped byte copy of the
   key**, and the docs no longer claim zeroization for it.
 - **core-L2 — spoken-word guessing odds documented** (SECURITY.md §10): one word is
@@ -198,7 +221,7 @@ are numbered independently.
   got published with provenance under this repo's identity.
 - **M6/L11 — crypto/protocol dependencies are never auto-merged.**
   `dependabot.yml`'s `production-minor` group now excludes `@noble/*`,
-  `@scure/*`, `nostr-tools`, `spoken-token`, and `@forgesworn/*` (they get their
+  `@scure/*`, `nostr-tools`, `nostr-attestations`, `spoken-token`, and `@forgesworn/*` (they get their
   own individual PR); `dependabot-auto-merge.yml` also refuses to auto-merge any
   PR touching one of them by name, as defense in depth.
 - **L10 — `ci.yml`:** adds a top-level `permissions: contents: read`; the
@@ -228,10 +251,13 @@ are numbered independently.
 
 ### Notes
 
-- No stored-entry migration is required for this release: every shape change
-  (`KenRotation.rollback?`, the length caps, the `pubkey`/`previousPubkeys` and
-  `pubkey`/`ownerPubkey` invariants) is additive or tightens validation of
-  already-invalid shapes; a previously-valid entry remains valid.
+- No stored-entry migration is required for this release. Parse and import stay
+  tolerant of what 0.1.x wrote: over-length strings, a permissive `nip05`, a
+  malformed `bondAssertion` (dropped) and a `previousPubkeys` holding the current
+  key (normalised) all still restore. **BREAKING:** two shapes are now rejected
+  at parse/import — a self-entry (`pubkey === ownerPubkey`) and a pending
+  rotation whose `newPubkey` equals `pubkey` — and because `importEntries` is
+  all-or-nothing, a backup holding either fails to restore as a whole.
 - Existing encrypted backups remain readable. Invites built by 0.1.x (v1) are no
   longer accepted and must be re-issued.
 - Open question (core-M4): PROTOCOL.md calls the handshake nonce a "ceremony counter
