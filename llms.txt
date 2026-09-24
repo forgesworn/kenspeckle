@@ -22,12 +22,14 @@ Signet ecosystem, consumed by signet-app.
 npm i @forgesworn/kenspeckle
 ```
 
-`@forgesworn/tessera-kit` is a sibling NOT YET ON NPM. `package.json` resolves it as a PINNED git
-dependency (`git+https://github.com/forgesworn/tessera-kit.git#<commit>`) — `npm ci`/`npm install`
-clone it directly; nothing to pack/symlink locally. An external installer needs read access to that
-repo (or @forgesworn/tessera-kit published to npm) for `npm i @forgesworn/kenspeckle` to succeed.
-`scripts/check-publishable-deps.mjs` runs in `prepack` (so on `npm pack` and `npm publish`) and in CI, and REFUSES to publish while any
-dependency/optionalDependency/peerDependency is a git/file/http(s) spec, so this cannot ship to npm unresolved.
+`@forgesworn/tessera-kit` is a sibling NOT YET ON NPM. `package.json` currently resolves it as a
+TEMPORARY `file:../tessera-kit` path dependency (migrating onto tessera-kit 0.2.0, ahead of that
+release being published) — this only resolves in a checkout with `tessera-kit` cloned as a sibling
+directory; nothing an external installer can use as-is. Once tessera-kit 0.2.0 is published to npm,
+this reverts to a plain semver range. `scripts/check-publishable-deps.mjs` runs in `prepack` (so on
+`npm pack` and `npm publish`) and in CI, and REFUSES to publish while any
+dependency/optionalDependency/peerDependency is a git/file/http(s) spec, so this cannot ship to npm
+unresolved.
 
 ```typescript
 import { deriveBondSecret, deriveCeremonyCounter, bondWords, verifyBondWord } from '@forgesworn/kenspeckle/bond'
@@ -46,8 +48,10 @@ const entry = await pinKenFromNip05('mrbeast@example.com', myPersonaPubHex, fetc
 const { nonce } = buildKeyControlChallenge()
 const { ok, reason } = verifyKeyControl(entry, nonce, signedByClaimant) // → { ok, reason? }
 
-// discovery: pin-verify the publication, then test MY contacts scoped to one persona.
-const pub = parseFilterPublication(rawWireEvent)        // raw event, never spread-mutated
+// discovery: pin-verify the publication, then test MY contacts scoped to one persona. `opts` is
+// REQUIRED (0.2.0) — the in-blob signature is bound to a `context` built ONLY from opts.namespace/
+// opts.serverId (never the event's own d-tag), closing cross-server/namespace substitution.
+const pub = parseFilterPublication(rawWireEvent, { namespace: 'com.example.game', serverId: 'play.example.com' })
 const present = discoverPresent(parseFilter(pub.blob), myEntries, myPersonaPubHex)
 ```
 
@@ -128,10 +132,23 @@ const present = discoverPresent(parseFilter(pub.blob), myEntries, myPersonaPubHe
   `ACK_KIND`, `SNAPSHOT_KIND`, `SNAPSHOT_D_TAG`, `RETURN_D_TAG`,
   `RETURN_ADDITIONS_CAP`, `RETURN_CORROBORATIONS_CAP`.
 - `./discovery` — `discoverPresent` (also throws if a salt is given to an OPEN
-  filter, or omitted for a KEYED one), `disclosureFor`, `buildFilterPublication`,
-  `parseFilterPublication` (opt `requireAuthorIsSigner`, default true: the event
-  signer must equal the in-blob signer, binding namespace/serverId to what was
-  signed), `parseFilterPublicationResult` (same checks, returns `{ ok: false, reason }`
+  filter, omitted for a KEYED one, or the empty string for a KEYED one —
+  @forgesworn/tessera-kit 0.2.0 rejects an empty salt outright), `disclosureFor`,
+  `filterSignatureContext(namespace, serverId)` (the kindred convention's
+  filter-signature `context` string, `= ` the d-tag value — build it from the
+  `(namespace, serverId)` YOU asked for, never from a received event's d-tag),
+  `buildFilterPublication` (verifies `p.blob` against
+  `filterSignatureContext(p.namespace, p.serverId)` and throws if it doesn't —
+  catches a wrong-context blob before publishing),
+  `parseFilterPublication(event, opts)` — **`opts` REQUIRED as of 0.2.0**:
+  `{ namespace, serverId, minEpoch?, requireAuthorIsSigner? }` (previously
+  optional, namespace/serverId read off the event's d-tag — BREAKING). The
+  in-blob signature is bound to `context = filterSignatureContext(opts.namespace,
+  opts.serverId)`; the event's own d-tag is separately checked to equal it
+  (`'address-mismatch'`); default `requireAuthorIsSigner: true`: the event
+  signer must also equal the in-blob signer. Never throws — missing/invalid
+  `opts` is a rejection (`'invalid-opts'`), not a throw.
+  `parseFilterPublicationResult` (same checks, returns `{ ok: false, reason }`
   with a `FilterPublicationRejection` code instead of `null`), `aggregatorQuery`, `buildOptOutRequest`, `parseFilter` (re-export);
   `KINDRED_FILTER_KIND`, `KINDRED_OPTOUT_KIND`.
 - `./invite` — `buildJoinInvite`, `parseJoinInvite`, `verifyBondAttestation(event,
@@ -148,9 +165,10 @@ rollback to a previously-rotated-away key is flagged and refused without an
 explicit override); `attributeSignature` is replayable (use `verifyKeyControl`);
 annotations AND `sharedSecret` are never on the true wire form (`toWire`/
 `serializeEntry`); and a forged presence filter is a doxxing primitive, so verify
-the Nostr sig AND the in-blob Schnorr sig — and, by default, that the event signer
-equals the in-blob signer — against a PINNED server key before trusting any hit.
-Full posture in SECURITY.md.
+the Nostr sig AND the in-blob Schnorr sig (now bound to a `context` built ONLY
+from the `{namespace, serverId}` you asked for, never the event's own d-tag) —
+and, by default, that the event signer equals the in-blob signer — against a
+PINNED server key before trusting any hit. Full posture in SECURITY.md.
 
 ## Optional
 

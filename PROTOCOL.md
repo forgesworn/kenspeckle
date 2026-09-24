@@ -403,25 +403,64 @@ Addressable event, `kind 30444`:
 | `["keyed", "0"\|"1"]` | whether the pool is keyed (salted) |
 | `content` | **base64 of the raw @forgesworn/tessera-kit `KFLT` blob** |
 
-**`parseFilterPublication`** returns `null` (never throws) on any failure, in order:
-(1) bad Nostr event signature (`verifyEvent`); (2) wrong kind; (3) missing/undecodable
+**Signature CONTEXT binding (@forgesworn/tessera-kit 0.2.0, BREAKING).** Every filter-blob
+signature is now bound to a caller-supplied `context` string (@forgesworn/tessera-kit
+PROTOCOL.md §4.1/§4.3/§6) — a wrong context fails exactly like a bad or absent
+signature. For the kindred convention, `context` **is** the d-tag value:
+`kindred:members:<namespace>:<serverId>`. `./discovery` exports
+`filterSignatureContext(namespace, serverId): string` — reused by
+`buildFilterPublication`'s own d-tag construction, so the two can never
+disagree — for building this string.
+
+> ⚠️ **The context MUST be built from the `(namespace, serverId)` the verifier
+> ITSELF chose to fetch — NEVER from the received event's own `d`-tag (or any
+> other tag).** A relay or MITM controls every tag on the event it serves; if the
+> context were derived from the tag, an attacker could relabel a substituted blob
+> (signed for a **different** deployment, possibly under the same signing key) and
+> have the check pass trivially. This is @forgesworn/tessera-kit PROTOCOL.md §4.3's
+> single most important rule, restated here because it is the whole point of
+> `opts.namespace`/`opts.serverId` below.
+
+**`parseFilterPublication(event, opts)` / `parseFilterPublicationResult(event,
+opts)`** — `opts` is now **REQUIRED**: `{ namespace: string; serverId: string;
+minEpoch?: number; requireAuthorIsSigner?: boolean }` (previously optional, with
+`namespace`/`serverId` recovered from the event's own d-tag — BREAKING, see
+CHANGELOG). `context` is built **only** from `opts.namespace`/`opts.serverId`, per
+the warning above. `parseFilterPublication` returns `null` (never throws) on any
+failure, in order:
+(1) `opts.namespace`/`opts.serverId` missing or not a non-empty string (a
+caller-configuration error, reported as a rejection, never a throw); (2) bad
+Nostr event signature (`verifyEvent`); (3) wrong kind; (4) missing/undecodable
 base64 content, or a blob over @forgesworn/tessera-kit's 64 MiB cap (the encoded length is
 capped **before** decode so an oversized payload can't be expanded into memory);
-(4) bad **in-blob Schnorr** provenance signature (`verifyFilterBlob` — the §10
-invariant); (5) the blob does not re-parse as a filter; (6) d-tag not in
-`kindred:members:<ns>:<server>` shape, or the `n` tag absent or not equal to the
-namespace recovered from the d-tag; (7) with `opts.requireAuthorIsSigner` (default
-**`true`**), the event author differs from the in-blob signer; (8) the `epoch` /
-`keyed` tags, if present, disagree with the blob's signed values; (9) if
+(5) the event's `d`-tag does not **exactly** equal
+`filterSignatureContext(opts.namespace, opts.serverId)` — checked **before** the
+blob signature, since `context` for that check is built only from `opts`, never
+from this tag; or the `n` tag does not equal `opts.namespace`; (6) bad **in-blob
+Schnorr** provenance signature bound to that `context` (`verifyFilterBlob` — the
+§10 invariant, extended in 0.2.0 with context binding, which closes
+cross-server/namespace filter substitution cryptographically); (7) the blob does
+not re-parse as a filter; (8) with `opts.requireAuthorIsSigner` (default
+**`true`**), the event author differs from the in-blob signer; (9) the `epoch` /
+`keyed` tags, if present, disagree with the blob's signed values; (10) if
 `opts.minEpoch` is set, the **signed** epoch `<= minEpoch` (monotonicity —
 replay/rollback defence; strict, so re-reading the current publication also
 returns `null`).
 
-Step 7 is what binds `namespace` / `serverId` to the server: the in-blob signature
-covers epoch, keyed flag and fingerprint but **not** the d-tag, so without it anyone
-could re-wrap a genuine server-signed blob under a different `serverId` in an event
-they sign, and still get the real server back as `signerPubkeyHex`. Requiring the
-event author to be that same key makes the outer NIP-01 signature (which covers
+**REMOVED as of 0.2.0 (BREAKING):** the `bad-d-tag` / `d-tag-no-colon` /
+`empty-namespace-or-serverid` `FilterPublicationRejection` codes, which existed to
+PARSE `namespace`/`serverId` **out of** the d-tag — the only source of truth for
+them pre-0.2.0. `opts.namespace`/`opts.serverId` are now that source of truth, so
+any d-tag that fails to exactly reproduce
+`filterSignatureContext(opts.namespace, opts.serverId)` now falls into the single
+`address-mismatch` code, and a missing/invalid `opts` falls into `invalid-opts`.
+
+Step 8 (author binding) is defence-in-depth alongside context binding, not a
+replacement for it: the in-blob signature covers `context` (and so, transitively,
+`namespace`/`serverId`) as of 0.2.0, but not the Nostr event's own `pubkey` field,
+so without step 8 an attacker holding a genuinely-context-bound blob could still
+wrap it in an event they sign with their own key. Requiring the event author to be
+the same key as the in-blob signer makes the outer NIP-01 signature (which covers
 every tag) the server's own. `{ requireAuthorIsSigner: false }` opts out for a
 consumer that trusts a republisher. On success it returns `{ namespace, serverId, blob, keyed, epoch,
 signerPubkeyHex }`, where **`signerPubkeyHex` is the in-blob provenance signer (the
@@ -429,9 +468,18 @@ server's key), NOT the Nostr event author** — the consumer pins/extends-trust 
 that value.
 
 > Two **distinct** signatures gate a publication: the Nostr event signature (NIP-01
-> transport integrity) **and** the in-blob Schnorr provenance signature. A consumer
-> trusts a hit only after BOTH verify and `signerPubkeyHex` equals a pinned server
-> key (see SECURITY.md — a forged filter is a doxxing primitive).
+> transport integrity) **and** the in-blob Schnorr provenance signature, now bound
+> to `context`. A consumer trusts a hit only after BOTH verify and
+> `signerPubkeyHex` equals a pinned server key (see SECURITY.md — a forged filter
+> is a doxxing primitive).
+
+**`buildFilterPublication(p)`** — `p.blob` MUST already be a SIGNED KFLT blob
+(`signFilterBlob`), signed with `context = filterSignatureContext(p.namespace,
+p.serverId)`. As of 0.2.0, `buildFilterPublication` itself verifies this
+(`verifyFilterBlob(p.blob, filterSignatureContext(p.namespace, p.serverId))`) and
+throws a clear kenspeckle error if it does not verify — catching a blob signed for
+the wrong deployment **before** it is ever published, rather than leaving every
+consumer to discover the mismatch independently.
 
 ### 5.3 serverId-with-colons in the d-tag
 

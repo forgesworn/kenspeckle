@@ -131,11 +131,17 @@ contacts — scoped to one persona.
 // it into tessera-kit directly.
 import { discoverPresent, parseFilter, parseFilterPublication } from '@forgesworn/kenspeckle/discovery'
 
-// Pull the kind-30444 publication; verifies BOTH the Nostr event sig and the in-blob Schnorr sig,
-// and — since 0.2.0 — that the event's signer IS the in-blob signer (`requireAuthorIsSigner`,
-// default true), binding the namespace/serverId in the d-tag to what the server actually signed.
-// Returns null on any failure.
-const pub = parseFilterPublication(rawWireEvent) // pass the RAW event — not a spread-mutated one
+// Pull the kind-30444 publication for the (namespace, serverId) YOU chose to fetch — as of 0.2.0
+// this REQUIRES opts, since @forgesworn/tessera-kit now binds the in-blob signature to a `context`
+// string built ONLY from opts (kindred: `kindred:members:<namespace>:<serverId>`), never from the
+// event's own d-tag — that is what stops a relay from relabelling a substituted blob. Verifies BOTH
+// the Nostr event sig and the in-blob Schnorr sig (bound to that context), that the event's own
+// d-tag equals it, and — default true — that the event's signer IS the in-blob signer
+// (`requireAuthorIsSigner`). Returns null on any failure.
+const pub = parseFilterPublication(rawWireEvent, {
+  namespace: 'com.example.game',
+  serverId: 'play.example.com',
+}) // pass the RAW event — not a spread-mutated one
 if (!pub) throw new Error('untrusted publication')
 
 // Provenance gate: the IN-BLOB signer must be a key you pinned out-of-band.
@@ -296,14 +302,29 @@ compromise). Signals, not guarantees.
 
 `discoverPresent(filter, entries, ownerPubkey, saltHex?)` (throws on mixed persona;
 **also** throws if `saltHex` is given for an OPEN filter or omitted for a KEYED
-one — either mismatch would otherwise silently match nothing, a false "no friends
-here"); `disclosureFor(filter: MembershipFilter)` → `DiscoveryDisclosure` (pass the filter `parseFilter` returned); `buildFilterPublication(p)`
-/ `parseFilterPublication(event, opts?)` (verifies the Nostr event sig, the in-blob
-Schnorr sig, **and** — `opts.requireAuthorIsSigner`, default `true`, since 0.2.0 —
-that the event's signer IS the in-blob signer, so the namespace/serverId the event
-asserts are transitively bound to what the server signed; pass `{
-requireAuthorIsSigner: false }` to opt out for a different trust model. Returns
-`null`, never throws); `parseFilterPublicationResult(event, opts?)` → `{ ok: true,
+one, or if `saltHex` is the **empty string** for a KEYED one (@forgesworn/tessera-kit
+0.2.0 rejects an empty salt outright) — any of these would otherwise silently
+match nothing, a false "no friends here"); `disclosureFor(filter: MembershipFilter)`
+→ `DiscoveryDisclosure` (pass the filter `parseFilter` returned);
+`filterSignatureContext(namespace, serverId)` → the kindred convention's
+filter-signature `context` string (@forgesworn/tessera-kit 0.2.0), identical to
+the d-tag value `kindred:members:<namespace>:<serverId>` — build it from the
+`(namespace, serverId)` **you** chose to fetch, never from a received event's own
+d-tag; `buildFilterPublication(p)` — `p.blob` must already be signed
+(`signFilterBlob`) for `filterSignatureContext(p.namespace, p.serverId)`; this
+function verifies that itself and throws a clear error if it doesn't verify, so a
+blob signed for the wrong deployment is caught before publishing
+/ `parseFilterPublication(event, opts)` — **`opts` is now REQUIRED**:
+`{ namespace, serverId, minEpoch?, requireAuthorIsSigner? }` (BREAKING as of
+0.2.0; previously optional, with namespace/serverId read off the event's own
+d-tag). Verifies the Nostr event sig, that the event's d-tag equals
+`filterSignatureContext(opts.namespace, opts.serverId)`, the in-blob Schnorr sig
+bound to that same context (@forgesworn/tessera-kit 0.2.0 — closes
+cross-server/namespace filter substitution cryptographically), **and** —
+`opts.requireAuthorIsSigner`, default `true` — that the event's signer IS the
+in-blob signer; pass `{ requireAuthorIsSigner: false }` to opt out for a
+different trust model. Returns `null`, never throws — including when `opts` is
+missing or `opts.namespace`/`opts.serverId` is invalid; `parseFilterPublicationResult(event, opts)` → `{ ok: true,
 value } | { ok: false, reason: FilterPublicationRejection }` — the same checks as
 `parseFilterPublication`, but naming WHICH one failed instead of collapsing to
 `null` (`parseFilterPublication` is now a thin wrapper over this); `aggregatorQuery(namespace)`; `buildOptOutRequest(p,
@@ -353,10 +374,16 @@ short version:
   impersonation resistance.
 - **Verify filter publications against a pinned key** — check the Nostr sig AND the
   in-blob Schnorr sig; pass the **raw** wire event (a spread-mutated one carries a
-  stale `Symbol(verified)` false-green). Since 0.2.0, `parseFilterPublication` also
-  requires the event's signer to equal the in-blob signer by default
-  (`requireAuthorIsSigner`), binding the namespace/serverId the event asserts to
-  what the server actually signed.
+  stale `Symbol(verified)` false-green). Since 0.2.0, `parseFilterPublication`/
+  `parseFilterPublicationResult` **require** `opts: { namespace, serverId }` — the
+  in-blob signature is now bound to a `context` string
+  (@forgesworn/tessera-kit 0.2.0) built **only** from `opts`, never from the
+  event's own d-tag, which is what stops a relay/MITM from relabelling a
+  substituted blob (see @forgesworn/tessera-kit PROTOCOL.md §4.3). The event's own
+  d-tag is separately checked to equal that same context
+  (`'address-mismatch'` on a mismatch). By default (`requireAuthorIsSigner`) the
+  event's signer must also equal the in-blob signer, defence-in-depth alongside —
+  not instead of — context binding.
 - **Discovery is opt-in + exit-able, but you cannot cryptographically verify
   removal** from a pool you left. Real member privacy = per-context personas.
 - **`tier:'kith'` is a shape, not proof a bond happened.** `parseEntry`/

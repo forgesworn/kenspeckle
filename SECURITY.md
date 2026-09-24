@@ -134,7 +134,7 @@ Both fail closed on `revoked` (checked first) and on a `previousPubkeys` (rotate
 key. Use attribution to credit an artifact; use key-control to authenticate a live
 party.
 
-### 6. Filter publications: verify BOTH signatures against a PINNED key
+### 6. Filter publications: verify BOTH signatures against a PINNED key — and a bound CONTEXT
 
 A published presence filter is just bytes a stranger served you. A **forged** filter
 is a **doxxing primitive** — an attacker who makes you trust an arbitrary membership
@@ -148,18 +148,45 @@ and a consumer **MUST** check **both** before trusting any hit:
    @forgesworn/tessera-kit), whose `signerPubkeyHex` the consumer **MUST compare against a
    pinned / out-of-band-known server key**.
 
+**CONTEXT BINDING (@forgesworn/tessera-kit 0.2.0, BREAKING).** As of 0.2.0 the in-blob
+signature is also bound to a caller-supplied `context` string — for the kindred
+convention, `context = filterSignatureContext(namespace, serverId)`, identical to
+the d-tag value. `parseFilterPublication`/`parseFilterPublicationResult` now
+**REQUIRE** `opts: { namespace, serverId, minEpoch?, requireAuthorIsSigner? }`
+(previously optional, with `namespace`/`serverId` read off the event's own
+d-tag). **`context` is built ONLY from `opts` — NEVER from the received event's
+own `d`-tag.** This is the load-bearing rule: a relay or MITM controls every tag
+on the event it serves, so if `context` were derived from the tag, an attacker
+could relabel a blob signed for a **different** deployment (possibly under the
+SAME signing key) and have the check pass trivially. Building `context` from the
+`(namespace, serverId)` the consumer itself chose to fetch — the same pair it
+already needed to know in order to go ask for this filter in the first place —
+closes cross-server/namespace filter substitution **cryptographically**, not just
+by convention. `parseFilterPublicationResult` separately checks the event's own
+d-tag equals that same context (`'address-mismatch'` on a mismatch) — a
+kenspeckle-owned consistency check, additional to (not a substitute for) the
+context-bound signature check. A missing or invalid `opts.namespace`/
+`opts.serverId` is reported as a rejection (`'invalid-opts'`), never a throw.
+
 By default (`requireAuthorIsSigner: true`) `parseFilterPublication` also requires the
-Nostr event author to **be** the in-blob signer, and the `n` tag to match the d-tag's
-namespace. The in-blob signature does not cover `namespace` / `serverId`; without the
-author check, anyone could re-wrap a genuine server-signed blob under a different
-`serverId` and still get the real server back as `signerPubkeyHex` — showing that
-server at a pool it never published to. Pass `{ requireAuthorIsSigner: false }` only
-if you deliberately trust a republisher.
+Nostr event author to **be** the in-blob signer, and the `n` tag to match
+`opts.namespace`. This is defence-in-depth ALONGSIDE context binding, not a
+replacement for it: the in-blob signature covers `context` (and so, transitively,
+`namespace`/`serverId`) as of 0.2.0, but not the Nostr event's own `pubkey` field,
+so without the author check an attacker holding a genuinely context-bound blob
+could still wrap it in an event they sign with their own key. Pass `{
+requireAuthorIsSigner: false }` only if you deliberately trust a republisher.
+
+`buildFilterPublication` itself now verifies `p.blob` against
+`filterSignatureContext(p.namespace, p.serverId)` and throws a clear error if it
+doesn't verify — a blob signed for the wrong deployment is caught **before** it
+is ever published.
 
 `parseFilterPublication` returning a non-null result means only that both signatures
-are **internally consistent** — it is **not** trust. Anyone can mint a validly
-self-signed blob under their own key; the **pinned-key comparison** is what defeats
-forged-filter doxxing. (Cross-ref: @forgesworn/tessera-kit SECURITY.md §3.)
+are **internally consistent**, for the context the caller asked about — it is **not**
+trust. Anyone can mint a validly self-signed blob under their own key, for any
+context; the **pinned-key comparison** is what defeats forged-filter doxxing.
+(Cross-ref: @forgesworn/tessera-kit PROTOCOL.md §4.3, SECURITY.md §3.)
 
 > **`Symbol(verified)` footgun.** `nostr-tools`' `verifyEvent` caches its result in
 > an enumerable `Symbol(verified)`. An object-spread (`{...ev}`) copies that cache,

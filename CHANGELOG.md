@@ -35,6 +35,43 @@ this section, and the individually marked entries in the sections after it.
   `serverId` (or namespace) by anyone and still report the real server's
   `signerPubkeyHex`. **A previously-parseable cross-serverId republish now
   returns `null`** unless the caller passes `{ requireAuthorIsSigner: false }`.
+- **`parseFilterPublication(Result)` now REQUIRES `opts: { namespace, serverId,
+  minEpoch?, requireAuthorIsSigner? }`** (moving onto `@forgesworn/tessera-kit`
+  0.2.0, which binds every filter-blob signature to a caller-supplied `context`
+  string). `opts.namespace`/`opts.serverId` were previously optional — parsed
+  out of the event's own d-tag; they are now REQUIRED, and `context` (for the
+  kindred convention, `filterSignatureContext(namespace, serverId)`, identical
+  to the d-tag value) is built **only** from them, never from the event's own
+  tags. This closes cross-server/namespace filter substitution
+  **cryptographically**: previously, `pinnedPubkeyHex` (or, since M2 above,
+  `requireAuthorIsSigner`) was the only defence against a relay/MITM
+  re-serving one deployment's validly-signed blob in place of another's under
+  the SAME signing key; `context` binding means a blob signed for the wrong
+  deployment fails the in-blob signature check itself, no matter what label
+  the serving event wears. New `FilterPublicationRejection` codes
+  `'invalid-opts'` (missing/invalid `opts.namespace`/`opts.serverId` — a
+  rejection, never a throw) and `'address-mismatch'` (the event's own d-tag
+  does not exactly equal `filterSignatureContext(opts.namespace,
+  opts.serverId)`, checked before the blob signature). **Removed:**
+  `'bad-d-tag'`, `'d-tag-no-colon'`, and `'empty-namespace-or-serverid'` —
+  these existed to parse `namespace`/`serverId` OUT of the d-tag, which is no
+  longer their source of truth. New export `filterSignatureContext(namespace,
+  serverId): string`. `buildFilterPublication` now itself verifies `p.blob`
+  against `filterSignatureContext(p.namespace, p.serverId)` and throws if it
+  doesn't verify, catching a wrong-context blob before it is ever published.
+  `discoverPresent` now also throws on an EMPTY-STRING `saltHex` for a KEYED
+  filter (tessera-kit 0.2.0 rejects an empty salt outright — see tessera-kit
+  CHANGELOG [0.2.0]). **Migrate:** pass `{ namespace, serverId }` at every
+  `parseFilterPublication`/`parseFilterPublicationResult` call site; re-sign
+  every stored filter blob with `signFilterBlob(unsigned, priv, context)`
+  using the new required `context` argument.
+- **`@forgesworn/tessera-kit` is temporarily a `file:../tessera-kit` dependency**
+  (was a pinned `git+https://…` dependency), tracking tessera-kit 0.2.0 ahead of
+  its npm release. This only resolves in a checkout with `tessera-kit` cloned as
+  a sibling directory — `scripts/check-publishable-deps.mjs` (`prepack` + CI)
+  correctly refuses to publish while this is the case, unchanged from the
+  git-dependency era. Revert to a pinned git commit or a plain semver range
+  once tessera-kit 0.2.0 is published.
 - **L6 — `disclosureFor` now takes the parsed `MembershipFilter`, not
   `{ salt? }`.** The old signature derived `keyed` from salt PRESENCE, a second
   source of truth that could disagree with the filter's own `keyed` flag. Callers
@@ -261,12 +298,14 @@ this section, and the individually marked entries in the sections after it.
   the constant-time compare, so "Fruit ", " FRUIT" and "fruit" all verify
   identically — spoken-token's own wordlist is already lowercase, so this only
   forgives how a human said or typed the word back.
-- **`./discovery` — `parseFilterPublicationResult(event, opts?)`.** Additive
+- **`./discovery` — `parseFilterPublicationResult(event, opts)`.** Additive
   alongside `parseFilterPublication`: returns `{ ok: true, value } | { ok:
-  false, reason: FilterPublicationRejection }`, naming which of the 15 checks
-  failed instead of collapsing every rejection to `null`.
-  `parseFilterPublication` is now a thin wrapper over this (`r.ok ? r.value :
-  null`) — its behaviour is unchanged.
+  false, reason: FilterPublicationRejection }`, naming which check failed
+  instead of collapsing every rejection to `null`. `parseFilterPublication` is
+  now a thin wrapper over this (`r.ok ? r.value : null`) — its behaviour is
+  unchanged. (`opts` became REQUIRED, and the check list changed, in the later
+  tessera-kit-0.2.0 entry above — this entry documents when the function was
+  first added.)
 - **Packaging.** `exports` gains `"./package.json"`. New `test:coverage`
   (`vitest run --coverage`, via new devDependency `@vitest/coverage-v8`) and
   `lint:package` (`publint && attw --pack . --profile esm-only`, via new
