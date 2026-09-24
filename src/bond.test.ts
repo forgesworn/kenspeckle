@@ -10,10 +10,13 @@ import {
   bondWords,
   verifyBondWord,
   buildBondAttestation,
+  buildBondRevocation,
   retractBondAssertion,
   KINDRED_BOND_NAMESPACE,
 } from './bond.js'
-import type { BondAssertion } from './types.js'
+import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure'
+import { verifyBondAttestation } from './invite.js'
+import type { BondAssertion, NostrEvent } from './types.js'
 
 // A fixed, valid secp256k1 keypair-derived secret for the word/attestation tests (any 32-byte hex).
 const SECRET = 'fd264454c8f37c9c4b000f0672399b9c76011de71f489fd8a043e25e558226f9'
@@ -335,19 +338,103 @@ describe('buildBondAttestation — kind-31000 via nostr-attestations', () => {
   })
 })
 
-describe('retractBondAssertion — NIP-09 kind-5', () => {
-  it('returns kind 5 with an e-tag referencing assertion.mineId', () => {
-    const assertion: BondAssertion = {
-      mineId: 'ab'.repeat(32),
-      relay: 'wss://relay.example',
-      createdAt: 1_700_000_000,
-    }
-    const tmpl = retractBondAssertion(assertion)
+describe('buildBondRevocation — the primary retraction (M3)', () => {
+  const subject = 'cd'.repeat(32)
+
+  it('republishes the attestation address (same kind + d) with status:revoked', () => {
+    const attestation = buildBondAttestation({ subjectPubHex: subject })
+    const revocation = buildBondRevocation({ subjectPubHex: subject.toUpperCase(), reason: 'lost device' })
+    expect(revocation.kind).toBe(31000)
+    const d = (t: { tags: string[][] }) => t.tags.find((x) => x[0] === 'd')?.[1]
+    expect(d(revocation)).toBe(d(attestation))
+    expect(revocation.tags).toContainEqual(['status', 'revoked'])
+    expect(revocation.tags).toContainEqual(['p', subject])
+    expect(revocation.tags).toContainEqual(['reason', 'lost device'])
+    expect(typeof revocation.created_at).toBe('number')
+  })
+
+  it('a signed revocation is rejected by verifyBondAttestation with reason "revoked"', () => {
+    const sk = generateSecretKey()
+    const signed = finalizeEvent(buildBondRevocation({ subjectPubHex: subject }), sk)
+    const wire = JSON.parse(JSON.stringify(signed)) as NostrEvent
+    expect(verifyBondAttestation(wire)).toEqual({ ok: false, reason: 'revoked' })
+  })
+
+  it('rejects a malformed subject', () => {
+    expect(() => buildBondRevocation({ subjectPubHex: 'nothex' })).toThrow(/subjectPubHex/)
+  })
+})
+
+describe('retractBondAssertion — NIP-09 kind-5 supplement (M3)', () => {
+  const assertion: BondAssertion = {
+    mineId: 'ab'.repeat(32),
+    relay: 'wss://relay.example',
+    createdAt: 1_700_000_000,
+  }
+  const attester = 'ef'.repeat(32)
+  const subject = 'cd'.repeat(32)
+
+  it('returns kind 5 with e, a (31000:<attester>:kindred-bond:<subject>) and k tags', () => {
+    const tmpl = retractBondAssertion(assertion, { attesterPubHex: attester, subjectPubHex: subject })
     expect(tmpl.kind).toBe(5)
     expect(tmpl.content).toBe('')
-    const eTag = tmpl.tags.find((t) => t[0] === 'e')
-    expect(eTag).toBeDefined()
-    expect(eTag![1]).toBe(assertion.mineId)
+    expect(tmpl.tags).toEqual([
+      ['e', assertion.mineId],
+      ['a', `31000:${attester}:kindred-bond:${subject}`],
+      ['k', '31000'],
+    ])
+  })
+
+  it('the a-tag d-part matches the d-tag buildBondAttestation emits', () => {
+    const d = buildBondAttestation({ subjectPubHex: subject }).tags.find((t) => t[0] === 'd')?.[1]
+    const tmpl = retractBondAssertion(assertion, { attesterPubHex: attester, subjectPubHex: subject })
+    expect(tmpl.tags.find((t) => t[0] === 'a')?.[1]).toBe(`31000:${attester}:${d}`)
+  })
+
+  it('rejects a mineId that is not a 64-hex event id', () => {
+    for (const mineId of ['not-an-id', '', 'ab'.repeat(31)]) {
+      expect(() =>
+        retractBondAssertion({ ...assertion, mineId }, { attesterPubHex: attester, subjectPubHex: subject }),
+      ).toThrow(/mineId/)
+    }
+  })
+
+  it('rejects a malformed attester or subject', () => {
+    expect(() => retractBondAssertion(assertion, { attesterPubHex: 'x', subjectPubHex: subject })).toThrow(/attester/)
+    expect(() => retractBondAssertion(assertion, { attesterPubHex: attester, subjectPubHex: 'x' })).toThrow(/subject/)
+  })
+})
+
+describe('bondWords / verifyBondWord — pubkey + namespace guards (L1)', () => {
+  it('bondWords throws a kenspeckle error for a self-bond instead of leaking spoken-token\'s', () => {
+    expect(() => bondWords(SECRET, PUB_A, PUB_A, 0)).toThrow('bondWords: own and counterparty pubkeys must differ')
+    expect(() => bondWords(SECRET, PUB_A, PUB_A.toUpperCase(), 0)).toThrow(/must differ/)
+  })
+
+  it('bondWords rejects non-64-hex pubkeys (previously returned words for "x","y")', () => {
+    expect(() => bondWords(SECRET, 'x', 'y', 1)).toThrow(/own pubkey/)
+    expect(() => bondWords(SECRET, PUB_A, 'y', 1)).toThrow(/counterparty pubkey/)
+  })
+
+  it('bondWords rejects an empty namespace', () => {
+    expect(() => bondWords(SECRET, PUB_A, PUB_B, 0, { namespace: '' })).toThrow(/namespace/)
+  })
+
+  it('verifyBondWord returns ok:false (never throws) for a self-bond, bad pubkey or empty namespace', () => {
+    const word = bondWords(SECRET, PUB_A, PUB_B, 0).theirs
+    expect(verifyBondWord(SECRET, PUB_A, PUB_A, 0, word)).toEqual({ ok: false })
+    expect(verifyBondWord(SECRET, PUB_A, 'zz', 0, word)).toEqual({ ok: false })
+    expect(verifyBondWord(SECRET, PUB_A, PUB_B, 0, word, { namespace: '' })).toEqual({ ok: false })
+    expect(verifyBondWord(SECRET, PUB_A, PUB_B, 0, word)).toEqual({ ok: true })
+  })
+})
+
+describe('deriveBondSecret — no cosmetic zeroization (L3)', () => {
+  it('makes no byte copy of the key: the source carries no dead fill(0) wipe', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('./bond.ts', import.meta.url), 'utf8')
+    const body = src.slice(src.indexOf('export function deriveBondSecret'), src.indexOf('export interface BondWordsOpts'))
+    expect(body).not.toMatch(/fill\(0\)/)
   })
 })
 

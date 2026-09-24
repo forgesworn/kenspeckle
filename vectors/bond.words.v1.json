@@ -1,0 +1,56 @@
+{
+  "description": "Bond spoken-word golden vector for @forgesworn/kenspeckle ./bond. Uses the frozen ECDH secret and pubkeys from bond.ecdh.v1.json. For each row, bondWords(secret, pubA, pubB, counter, { namespace }) MUST return { mine: aMine, theirs: aTheirs }, and the B seat (pubB, pubA) MUST return the mirror { mine: aTheirs, theirs: aMine }. Frozen against spoken-token internals (pair\\0 context, wordlist): a dependency bump that changes any word changes every contact's words and must fail here. The signet:me rows are kenspeckle's own output with that namespace, not an independent signet-me capture.",
+  "secret": "fd264454c8f37c9c4b000f0672399b9c76011de71f489fd8a043e25e558226f9",
+  "pubA": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+  "pubB": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+  "words": [
+    {
+      "namespace": "kindred:bond",
+      "counter": 0,
+      "aMine": "excuse",
+      "aTheirs": "gopher"
+    },
+    {
+      "namespace": "kindred:bond",
+      "counter": 1,
+      "aMine": "fruit",
+      "aTheirs": "original"
+    },
+    {
+      "namespace": "kindred:bond",
+      "counter": 7,
+      "aMine": "ball",
+      "aTheirs": "dinosaur"
+    },
+    {
+      "namespace": "kindred:bond",
+      "counter": 4294967295,
+      "aMine": "captain",
+      "aTheirs": "nephew"
+    },
+    {
+      "namespace": "signet:me",
+      "counter": 0,
+      "aMine": "crater",
+      "aTheirs": "strong"
+    },
+    {
+      "namespace": "signet:me",
+      "counter": 1,
+      "aMine": "aisle",
+      "aTheirs": "fiscal"
+    },
+    {
+      "namespace": "signet:me",
+      "counter": 7,
+      "aMine": "size",
+      "aTheirs": "found"
+    },
+    {
+      "namespace": "signet:me",
+      "counter": 4294967295,
+      "aMine": "surround",
+      "aTheirs": "loop"
+    }
+  ]
+}

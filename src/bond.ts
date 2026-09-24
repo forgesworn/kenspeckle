@@ -15,7 +15,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { deriveDirectionalPair } from 'spoken-token'
 import { timingSafeStringEqual } from 'spoken-token/crypto'
-import { createAttestation } from 'nostr-attestations'
+import { ATTESTATION_KIND, createAttestation, createRevocation } from 'nostr-attestations'
 import type { EventTemplate, BondAssertion } from './types.js'
 
 // `secp256k1.Point` is the v2 Weierstrass point class. `Point.Fn` is the scalar field; `.ORDER` is
@@ -26,6 +26,9 @@ const Point = secp256k1.Point
 /** Domain-separation namespace for the spoken-token directional pair. Distinct from any other
  *  spoken-token use so a bond word can never collide with (or be replayed as) another ceremony. */
 export const KINDRED_BOND_NAMESPACE = 'kindred:bond'
+
+/** The addressable kind nostr-attestations publishes bond attestations (and their revocations) under. */
+const BOND_ATTESTATION_KIND: number = ATTESTATION_KIND
 
 /** Exactly 64 lowercase hex chars (32 bytes). Inputs are lowercased before this test runs. */
 const HEX64_LOWER = /^[0-9a-f]{64}$/
@@ -47,10 +50,10 @@ const HEX64_LOWER = /^[0-9a-f]{64}$/
  * This is exactly why signet-protocol is safe to migrate from byte-for-byte: the shared x is the
  * invariant, not the chosen sign.
  *
- * **Zeroization contract (see PROTOCOL.md):** we zeroize the `privBytes` copy in a `finally`. We do
- * NOT — and CANNOT — wipe the `scalar` (`bigint`s are immutable in JS; there is no in-place clear)
- * nor the intermediate ECDH point's internal limbs. State this honestly: a future Rust/WASM port
- * MUST zeroize the scalar and the point. This JS implementation is best-effort on the byte copy only.
+ * **Zeroization contract (see PROTOCOL.md §1.6): none.** The key arrives as an immutable hex string
+ * and the ECDH runs on a `bigint` scalar and point limbs, none of which can be wiped from JS, and no
+ * byte copy of the key is made. This function makes NO zeroization claim. A future Rust/WASM port
+ * MUST take the key as bytes and zeroize the scalar and the point.
  *
  * @param myPrivHex   - My persona private key, 64 hex chars (case-insensitive).
  * @param theirPubHex - The counterparty's x-only (BIP-340) pubkey, 64 hex chars (case-insensitive).
@@ -78,14 +81,8 @@ export function deriveBondSecret(myPrivHex: string, theirPubHex: string): string
     throw new Error('deriveBondSecret: non-canonical scalar')
   }
 
-  // Best-effort zeroization target (the only material we CAN wipe — the bigint scalar can't be).
-  const privBytes = hexToBytes(priv)
-  try {
-    const xHex = theirPoint.multiply(scalar).toAffine().x.toString(16).padStart(64, '0')
-    return bytesToHex(sha256(hexToBytes(xHex)))
-  } finally {
-    privBytes.fill(0) // best-effort; see zeroization contract above + PROTOCOL.md
-  }
+  const xHex = theirPoint.multiply(scalar).toAffine().x.toString(16).padStart(64, '0')
+  return bytesToHex(sha256(hexToBytes(xHex)))
 }
 
 /** Options for `bondWords` — additive + backward-compatible (default reproduces the existing behaviour).
@@ -120,6 +117,31 @@ function bondRoles(a: string, b: string): [string, string] {
   return a < b ? [a, b] : [b, a]
 }
 
+/** Validate + normalise the non-secret `bondWords` inputs, throwing a kenspeckle-shaped error rather
+ *  than letting spoken-token throw its own (`Roles must be distinct`, empty namespace) from inside.
+ *  Both pubkeys must be 64-hex and DIFFERENT (a self-bond has no counterparty word), and the
+ *  namespace a non-empty string. */
+function bondWordsInputs(
+  aPubHex: string,
+  bPubHex: string,
+  opts: BondWordsOpts | undefined,
+): { a: string; b: string; namespace: string } {
+  if (typeof aPubHex !== 'string' || !HEX64_LOWER.test(aPubHex.toLowerCase())) {
+    throw new Error('bondWords: own pubkey must be 64 hex chars')
+  }
+  if (typeof bPubHex !== 'string' || !HEX64_LOWER.test(bPubHex.toLowerCase())) {
+    throw new Error('bondWords: counterparty pubkey must be 64 hex chars')
+  }
+  const a = aPubHex.toLowerCase(),
+    b = bPubHex.toLowerCase()
+  if (a === b) throw new Error('bondWords: own and counterparty pubkeys must differ')
+  const namespace = opts?.namespace ?? KINDRED_BOND_NAMESPACE
+  if (typeof namespace !== 'string' || namespace.length === 0) {
+    throw new Error('bondWords: namespace must be a non-empty string')
+  }
+  return { a, b, namespace }
+}
+
 /**
  * Derive this seat's directional spoken-token word pair for a given rotation counter.
  *
@@ -144,6 +166,8 @@ function bondRoles(a: string, b: string): [string, string] {
  * @param opts      - Optional `{ namespace? }` — additive, default reproduces the existing behaviour
  *                    (`'kindred:bond'`).
  * @returns `{ mine, theirs }` — the word I speak and the word I expect from the counterparty.
+ * @throws If the secret or either pubkey is not 64-hex, the two pubkeys are equal, or the namespace is
+ *         empty.
  */
 export function bondWords(
   secretHex: string,
@@ -161,9 +185,7 @@ export function bondWords(
   if (typeof secretHex !== 'string' || !/^[0-9a-f]{64}$/i.test(secretHex)) {
     throw new Error('bondWords: secret must be 64 hex chars')
   }
-  const a = aPubHex.toLowerCase(),
-    b = bPubHex.toLowerCase()
-  const namespace = opts?.namespace ?? KINDRED_BOND_NAMESPACE
+  const { a, b, namespace } = bondWordsInputs(aPubHex, bPubHex, opts)
   const roles = bondRoles(a, b)
   const pair = deriveDirectionalPair(secretHex, namespace, roles, counter)
   // a and b are each exactly one of the two role tokens, so these lookups always resolve.
@@ -231,8 +253,17 @@ export interface VerifyBondWordOpts extends BondWordsOpts {
  * @param spoken    - The word the counterparty actually said.
  * @param opts      - Optional `{ namespace?, tolerance? }` — additive, defaults reproduce the existing
  *                    behaviour (`'kindred:bond'`, exact-counter `tolerance: 0`).
+ * **Pubkey / namespace problems are a verdict, not a throw.** A self-bond (`aPubHex === bPubHex`, e.g.
+ * a handshake that echoed my own pubkey back), a malformed pubkey or an empty namespace returns
+ * `{ ok: false }`: no spoken word can verify such a bond. A malformed SECRET still throws — it is a
+ * programmer error (the value `deriveBondSecret` returns is always well-formed).
+ *
+ * **Guessing odds (see SECURITY.md).** A word is one of 2048 (11 bits). Tolerance `t` accepts `2t+1`
+ * candidate words, so a blind guess succeeds with probability about `(2t+1)/2048`: ≈0.05% at `t=0`,
+ * ≈0.15% at `t=1`, ≈1% at `t=10`. There is no rate limit here; the protection is the human in the loop.
+ *
  * @returns `{ ok: true }` iff `spoken` equals the expected counterparty word (within tolerance), else
- *          `{ ok: false }`. Never throws on a valid-shaped call.
+ *          `{ ok: false }`. Never throws on a well-formed secret.
  */
 export function verifyBondWord(
   secretHex: string,
@@ -242,6 +273,15 @@ export function verifyBondWord(
   spoken: string,
   opts?: VerifyBondWordOpts,
 ): { ok: boolean } {
+  if (typeof secretHex !== 'string' || !/^[0-9a-f]{64}$/i.test(secretHex)) {
+    throw new Error('bondWords: secret must be 64 hex chars')
+  }
+  // Fail-soft on the non-secret inputs: a self-bond / bad pubkey / empty namespace is `{ ok: false }`.
+  try {
+    bondWordsInputs(aPubHex, bPubHex, opts)
+  } catch {
+    return { ok: false }
+  }
   const tolerance = clampTolerance(opts?.tolerance)
   const wordOpts: BondWordsOpts = { namespace: opts?.namespace }
   // Clamp the candidate counter window to the valid uint32 range so a boundary `counter` never feeds
@@ -292,20 +332,62 @@ export function buildBondAttestation(p: { subjectPubHex: string; summary?: strin
 }
 
 /**
- * Build the unsigned NIP-09 (kind-5) deletion request that retracts a previously-published bond
- * attestation, referencing the original by its event id.
+ * Build the unsigned kind-31000 REVOCATION of a bond attestation — the PRIMARY way to retract one.
  *
- * Per NIP-09 the deletion is a request — relays and clients SHOULD drop the referenced event, but a
- * retraction can never be cryptographically guaranteed network-wide. The caller signs this template
- * with the SAME key that signed the original attestation (only the author may delete their event).
+ * Uses nostr-attestations' own `createRevocation({ type:'kindred-bond', identifier: subject, subject })`,
+ * which republishes the SAME addressable slot (`d = kindred-bond:<subject>`) with `["status","revoked"]`.
+ * Because kind 31000 is addressable, the revocation REPLACES the attestation on every relay that
+ * honours replaceable semantics, and `verifyBondAttestation` rejects it with `reason: 'revoked'`. Unlike
+ * a NIP-09 deletion this is a positive, signed statement a verifier can see, not a request to forget.
+ * The caller signs it with the SAME key that signed the attestation.
  *
- * @param assertion - The local bond record; `assertion.mineId` is the id of the event to retract.
- * @returns An unsigned kind-5 `EventTemplate` with an `e` tag referencing `assertion.mineId`.
+ * @param p.subjectPubHex - The counterparty pubkey the attestation was about (64-hex; lowercased here).
+ * @param p.reason        - Optional human-readable reason (rendered as a `reason` tag).
+ * @returns An unsigned kind-31000 `EventTemplate` with a build-time `created_at`.
+ * @throws If `subjectPubHex` is not 64-hex.
  */
-export function retractBondAssertion(assertion: BondAssertion): EventTemplate {
+export function buildBondRevocation(p: { subjectPubHex: string; reason?: string }): EventTemplate {
+  if (typeof p.subjectPubHex !== 'string' || !HEX64_LOWER.test(p.subjectPubHex.toLowerCase())) {
+    throw new Error('buildBondRevocation: subjectPubHex must be 64 hex chars')
+  }
+  const subject = p.subjectPubHex.toLowerCase()
+  const template = createRevocation({ type: 'kindred-bond', identifier: subject, subject, reason: p.reason })
+  return { ...template, created_at: template.created_at ?? Math.floor(Date.now() / 1000) }
+}
+
+/**
+ * Build the unsigned NIP-09 (kind-5) deletion request that SUPPLEMENTS `buildBondRevocation`.
+ *
+ * Publish the revocation first; this asks relays to also drop the old attestation. It references it
+ * three ways, as NIP-09 asks for an addressable event: `["e", mineId]` (the specific version),
+ * `["a", "31000:<attester>:kindred-bond:<subject>"]` (every version at that address up to this
+ * request's `created_at`) and `["k", "31000"]`. An `e` tag alone deletes one version and leaves a
+ * republished one standing. NIP-09 is a request — a retraction can never be cryptographically
+ * guaranteed network-wide, which is why the revocation is the primary mechanism. The caller signs this
+ * with the SAME key that signed the original (only the author may delete their event).
+ *
+ * @param assertion - The local bond record; `assertion.mineId` (64-hex event id) is the version to drop.
+ * @param address   - `attesterPubHex` (the signer of the attestation) and `subjectPubHex`, both 64-hex.
+ * @returns An unsigned kind-5 `EventTemplate` with `e`, `a` and `k` tags.
+ * @throws If `mineId` or either pubkey is not 64-hex.
+ */
+export function retractBondAssertion(
+  assertion: BondAssertion,
+  address: { attesterPubHex: string; subjectPubHex: string },
+): EventTemplate {
+  const mineId = typeof assertion?.mineId === 'string' ? assertion.mineId.toLowerCase() : ''
+  if (!HEX64_LOWER.test(mineId)) throw new Error('retractBondAssertion: mineId must be a 64-hex event id')
+  const attester = typeof address?.attesterPubHex === 'string' ? address.attesterPubHex.toLowerCase() : ''
+  const subject = typeof address?.subjectPubHex === 'string' ? address.subjectPubHex.toLowerCase() : ''
+  if (!HEX64_LOWER.test(attester)) throw new Error('retractBondAssertion: attesterPubHex must be 64 hex chars')
+  if (!HEX64_LOWER.test(subject)) throw new Error('retractBondAssertion: subjectPubHex must be 64 hex chars')
   return {
     kind: 5,
-    tags: [['e', assertion.mineId]],
+    tags: [
+      ['e', mineId],
+      ['a', `${BOND_ATTESTATION_KIND}:${attester}:kindred-bond:${subject}`],
+      ['k', String(BOND_ATTESTATION_KIND)],
+    ],
     content: '',
     created_at: Math.floor(Date.now() / 1000),
   }
