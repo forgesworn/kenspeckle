@@ -481,7 +481,8 @@ describe('snapshot reducer — revocation is terminal (M1)', () => {
 
   it('a fresh state after re-pairing accepts snapshots again', () => {
     const repaired: CompanionSnapshotState = { ...paired, lastPublishedAt: undefined, revoked: false }
-    expect(applyCompanionSnapshot(repaired, buildGrantEnvelope(scope, contacts, 1)).contacts).toEqual(contacts)
+    // Any publishedAt at or above the new pairing's floor (pairedAt 100) is accepted.
+    expect(applyCompanionSnapshot(repaired, buildGrantEnvelope(scope, contacts, 100)).contacts).toEqual(contacts)
   })
 })
 
@@ -604,5 +605,68 @@ describe('return rail — strict NIP-05 claims', () => {
   it('still accepts a plain local@domain claim', () => {
     const parsed = parseReturnEnvelope(JSON.stringify({ v: 1, additions: [{ pubkey: APP, nip05: 'wren@example.org' }] }))
     expect(parsed?.additions[0]?.nip05).toBe('wren@example.org')
+  })
+})
+
+describe('parsePairingRequest — leading-? query (window.location.search)', () => {
+  it('accepts exactly the `?…` string a web carrier reads from window.location.search', () => {
+    const uri = buildPairingUri({ appPubkey: APP, appName: 'App', scope: ['kin'], relay: RELAY, nowSec: NOW, challenge: CHALLENGE })
+    const search = uri.slice(uri.indexOf('?'))
+    expect(search.startsWith('?app=')).toBe(true)
+    const r = parsePairingRequest(search, { nowSec: NOW })
+    expect(r.warnings).toEqual([])
+    expect(r.request?.appPubkey).toBe(APP)
+    expect(r.request?.challenge).toBe(CHALLENGE)
+    expect(parsePairingRequest(`?pair=1&${search.slice(1)}`, { nowSec: NOW }).request?.appPubkey).toBe(APP)
+  })
+})
+
+describe('snapshot reducer — the pairing floor stops a replayed tombstone after a re-pair', () => {
+  const scope = { tiers: ['kin'] as const, personas: 'all' as const }
+  const contacts = [{ pubkey: APP, ownerPubkey: OWNER, tier: 'kin' as const, relationship: 'child' as const, addedAt: 50 }]
+  // A re-pair re-derives the SAME rail key and d tag, so the tombstone from the previous pairing
+  // (publishedAt 50) is still validly signed by `pairing.railPubkey`. The new pairing began at 100.
+  const repaired: CompanionSnapshotState = {
+    pairing: { railPubkey: RAIL, dTag: SNAPSHOT_D_TAG, snapshotRelay: RELAY, grantedScope: { tiers: ['kin'], personas: 'all' }, pairedAt: 100 },
+    contacts: [],
+    revoked: false,
+  }
+
+  it('ignores an old tombstone replayed after a re-pair', () => {
+    const live = applyCompanionSnapshot(repaired, buildGrantEnvelope(scope, contacts, 120))
+    expect(live.contacts).toEqual(contacts)
+    const replayed = applyCompanionSnapshot(live, buildGrantEnvelope(scope, [], 50, { revoked: true }))
+    expect(replayed).toBe(live)
+    expect(replayed.revoked).toBe(false)
+  })
+
+  it('ignores a snapshot published before the pairing began', () => {
+    expect(applyCompanionSnapshot(repaired, buildGrantEnvelope(scope, contacts, 99))).toBe(repaired)
+  })
+
+  it('a fresh revocation at or above the floor still wins, whatever its order relative to snapshots', () => {
+    const live = applyCompanionSnapshot(repaired, buildGrantEnvelope(scope, contacts, 120))
+    const revoked = applyCompanionSnapshot(live, buildGrantEnvelope(scope, [], 110, { revoked: true }))
+    expect(revoked.revoked).toBe(true)
+    expect(revoked.contacts).toEqual([])
+    expect(applyCompanionSnapshot(repaired, buildGrantEnvelope(scope, [], 100, { revoked: true })).revoked).toBe(true)
+  })
+})
+
+describe('landReturnedKen — output always satisfies the creation rules', () => {
+  const EMOJI = '\u{1F600}'
+
+  it('rejects a returned ken whose pubkey is the owner persona (a self-entry parse would refuse)', () => {
+    expect(() => landReturnedKen({ pubkey: OWNER }, { appName: 'App', ownerPubkeyHex: OWNER, nowSec: NOW })).toThrow(/ownerPubkey/)
+  })
+
+  it('caps displayName and locators in code points, so an astral-heavy claim lands within the shared caps', () => {
+    const landed = landReturnedKen(
+      { pubkey: APP, displayName: EMOJI.repeat(300), claimedProvenance: { source: 'web', locator: EMOJI.repeat(900), confirmedAt: 5 } },
+      { appName: EMOJI.repeat(100), ownerPubkeyHex: OWNER, nowSec: NOW },
+    )
+    expect([...(landed.displayName ?? '')].length).toBeLessThanOrEqual(256)
+    for (const c of landed.corroborations ?? []) expect([...c.locator].length).toBeLessThanOrEqual(1024)
+    expect(parseEntry(serializeEntry(landed))).toEqual(landed)
   })
 })

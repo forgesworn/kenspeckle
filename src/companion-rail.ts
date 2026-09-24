@@ -8,7 +8,7 @@ import type { GrantContactView, GrantScope } from './grant-envelope.js'
 import { cleanDisplayText, parseGrantEnvelope } from './grant-envelope.js'
 import { COMPANION_LOCATOR_PREFIX } from './types.js'
 import type { KenEntry, KenProvenance } from './types.js'
-import { validateNip05, validateProvenance } from './validate.js'
+import { capDisplayName, capLocator, validateNip05, validateProvenance } from './validate.js'
 
 export const PAIRING_SCHEME = 'signet-grant:'
 export const ACK_KIND = 21237
@@ -103,7 +103,8 @@ export function buildPairingUri(opts: PairingUriOptions): string {
 }
 
 /**
- * Parse either the native pairing URI, a bare query, or an HTTPS carrier URL.
+ * Parse either the native pairing URI, a bare query (with or without the leading `?` that
+ * `window.location.search` carries), or an HTTPS carrier URL.
  * The caller supplies `nowSec` in deterministic tests; production defaults to
  * the current clock. Unknown scope tokens are dropped and reported.
  */
@@ -132,8 +133,9 @@ export function parsePairingRequest(
   const body = hashIndex >= 0 ? input.slice(0, hashIndex) : input
   const qIndex = body.indexOf('?')
   // With a `?`, the part before it must be the native scheme or an HTTPS carrier; without one, the
-  // whole input is a bare query.
-  if (qIndex >= 0) {
+  // whole input is a bare query. A `?` at index 0 (empty prefix) is also a bare query: that is the
+  // exact shape of `window.location.search`, which a same-device web carrier passes straight in.
+  if (qIndex > 0) {
     const prefix = body.slice(0, qIndex)
     if (!prefix.toLowerCase().startsWith(PAIRING_SCHEME) && !/^https:\/\//i.test(prefix)) {
       return { request: null, warnings: ['bad-scheme'] }
@@ -243,17 +245,27 @@ export function parsePairingAck(plaintext: string, expectedChallenge: string): P
  * pairing ceremony, after which the app starts from a fresh state (new
  * `pairing`, `revoked: false`, no `lastPublishedAt`).
  *
- * A revocation applies even if its `publishedAt` is not newer than the last
- * snapshot: a producer clock error that published a far-future snapshot must
- * not be able to block the owner's revocation. (`publishedAt` itself must be a
- * non-negative safe integer or the envelope is malformed — see
- * `parseGrantEnvelope`.) The consumer MUST have checked that the event was
- * signed by `pairing.railPubkey` before calling this.
+ * PAIRING FLOOR: `state.pairing.pairedAt` (unix seconds) is the floor. Any
+ * envelope — snapshot or revocation — whose `publishedAt` is below it is
+ * ignored (the exact input object is returned). A re-pair re-derives the SAME
+ * rail key and `d` tag, so the tombstone from an EARLIER pairing is still
+ * validly signed by `pairing.railPubkey`; without the floor anyone holding it
+ * could replay it to kill the new pairing for good. Set `pairedAt` when the
+ * pairing is established, no later than the pairing request's `t`.
+ *
+ * At or above the floor, a revocation applies even if its `publishedAt` is not
+ * newer than the last snapshot: a producer clock error that published a
+ * far-future snapshot must not be able to block the owner's revocation.
+ * (`publishedAt` itself must be a non-negative safe integer or the envelope is
+ * malformed — see `parseGrantEnvelope`.) The consumer MUST have checked that
+ * the event was signed by `pairing.railPubkey` before calling this.
  */
 export function applyCompanionSnapshot<T extends CompanionSnapshotState>(state: T, envelopeJson: string): T {
   const envelope = parseGrantEnvelope(envelopeJson)
   if (!envelope) return state
   if (state.revoked === true) return state
+  const floor = state.pairing?.pairedAt
+  if (typeof floor === 'number' && envelope.publishedAt < floor) return state
 
   if (envelope.revoked === true) {
     return {
@@ -533,6 +545,8 @@ export function landReturnedKen(
   const ownerPubkey = opts.ownerPubkeyHex.toLowerCase()
   if (!HEX64.test(pubkey)) throw new TypeError('companion rail: returned ken pubkey must be 64-hex')
   if (!HEX64.test(ownerPubkey)) throw new TypeError('companion rail: ownerPubkey must be 64-hex')
+  // A self-entry is never a relationship, and `parseEntry`/`importEntries` reject it.
+  if (pubkey === ownerPubkey) throw new TypeError('companion rail: returned ken pubkey must not equal ownerPubkey')
   // Non-negative integer, matching `buildPairingUri`'s timestamp guard in this module.
   if (!Number.isInteger(opts.nowSec) || opts.nowSec < 0) {
     throw new TypeError('companion rail: nowSec must be a non-negative integer')
@@ -591,6 +605,12 @@ export function landReturnedKen(
       confirmedAt: Math.floor(Math.min(Math.max(c.confirmedAt, 0), opts.nowSec)),
     }))
   }
+  // Same creation-path caps as `pinKen`, measured in the same unit (code points). The sanitisers
+  // above already keep inside them (200-code-point name; `companion:` + ≤192 + `:` + 512 locator),
+  // so these never fire today — they pin the invariant if either side's numbers ever move.
+  capDisplayName(entry.displayName)
+  capLocator(entry.provenance)
+  for (const c of entry.corroborations ?? []) capLocator(c)
   return entry
 }
 
