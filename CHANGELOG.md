@@ -251,7 +251,8 @@ this section, and the individually marked entries in the sections after it.
   ascending-byte-order pair; digest's first 4 bytes as a big-endian uint32),
   symmetric in argument order. New const `CEREMONY_COUNTER_TAG`.
   `timeCounter(nowSec, periodSec)` supports a later time-bucketed
-  re-verification (`Math.floor(nowSec / periodSec)`, clamped to uint32). New
+  re-verification (`Math.floor(nowSec / periodSec)`, which must fit uint32 —
+  it throws otherwise, rather than clamping). New
   frozen vector `vectors/bond.counter.v1.json` (independently computed with
   python3 `hashlib`, wired into `scripts/check-vectors.mjs`). See PROTOCOL.md
   §2 and §7.1.

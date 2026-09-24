@@ -652,9 +652,10 @@ counter = digest[0..4] read as a big-endian uint32   // unsigned, 0..0xFFFFFFFF
   collision surface with each other.
 
 `timeCounter(nowSec, periodSec)` supports the **later re-verification** case (§2):
-`Math.floor(nowSec / periodSec)`, clamped to the uint32 counter range. `periodSec`
-must be a positive safe integer and `nowSec` a finite number `>= 0`, else throws;
-the result throws if it exceeds `0xFFFFFFFF`.
+`Math.floor(nowSec / periodSec)`, which must fit the uint32 counter range —
+it is not clamped. `periodSec` must be a positive safe integer and `nowSec` a
+finite number `>= 0`, else throws; the result also throws if it exceeds
+`0xFFFFFFFF`.
 
 See §2's "Choosing `counter`" guidance for when to use which.
 

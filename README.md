@@ -225,8 +225,9 @@ migrated contact can cross-verify with an un-migrated peer; defaults
 **in-person** bond ceremony: both parties derive the SAME counter from their two
 handshake nonces (SHA-256, domain-tagged `CEREMONY_COUNTER_TAG`), symmetric in
 argument order. `timeCounter(nowSec, periodSec)` → `number` — `Math.floor(nowSec /
-periodSec)`, clamped to uint32, for a later re-verification (no fresh nonces on
-hand). A fixed `counter` is **not recommended** — see PROTOCOL.md §2.
+periodSec)`, for a later re-verification (no fresh nonces on hand); the result
+must fit the uint32 counter range, otherwise it throws (it is not clamped). A
+fixed `counter` is **not recommended** — see PROTOCOL.md §2.
 `normalizeSpokenWord(s)` → `string` — NFKC + trim + lowercase; `verifyBondWord`
 already applies this to `spoken` before comparing, so callers don't need to.
 

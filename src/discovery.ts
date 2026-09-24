@@ -195,60 +195,6 @@ export interface FilterPublication {
   signerPubkeyHex: string
 }
 
-/**
- * Parse + verify a filter publication. Returns `null` (never throws) on ANY failure, in order:
- *   1. the Nostr event signature is invalid (`verifyEvent`);
- *   2. the kind is not `KINDRED_FILTER_KIND`;
- *   3. the base64 content is missing/undecodable, or the blob exceeds tessera-kit's 64 MiB cap;
- *   4. the IN-BLOB Schnorr provenance signature is invalid (`verifyFilterBlob`) — the §10 invariant;
- *   5. the blob does not re-parse as a MembershipFilter (`parseFilter` throws → tampered header);
- *   6. the d-tag does not carry the `kindred:members:<ns>:<server>` shape, OR the `n` tag is absent
- *      or does not equal the namespace recovered from the d-tag;
- *   7. `opts.requireAuthorIsSigner` (default `true`) and `event.pubkey !== signerPubkeyHex`
- *      (namespace/serverId binding — see below);
- *   8. the event's `epoch`/`keyed` TAGS are present and DISAGREE with the blob's SIGNED values
- *      (defense-in-depth tampering signal);
- *   9. `opts.minEpoch` is set and the blob's SIGNED epoch `<= minEpoch` (monotonicity — rollback
- *      defense).
- *
- * `minEpoch` IS STRICT (`<=`, not `<`) — RE-READING THE SAME CURRENT PUBLICATION RETURNS `null` (L7
- * audit finding). If a consumer tracks `minEpoch` as "the last epoch I successfully accepted" and
- * later re-fetches that SAME (unchanged) publication — a normal poll, not an attack — this function
- * returns `null` for it, indistinguishable from a genuine forgery/rollback attempt (this function
- * has no reason codes to tell the two apart — seeing one is not, on its own, evidence of anything).
- * This is deliberate: monotonicity must be strict for the rollback defense to mean anything (`<`
- * would accept a byte-for-byte replay of the current epoch as if it were new). If a consumer wants
- * to distinguish "no change" from "rejected", track the LAST epoch it observed (not "accepted") and
- * pass `lastObservedEpoch - 1` as `minEpoch`, or compare `epoch` against its own cached value BEFORE
- * calling this function and skip the call entirely when nothing changed.
- *
- * NAMESPACE/SERVERID BINDING (M2 audit finding). The KFLT blob's in-blob Schnorr signature (§10
- * invariant, step 4) covers epoch/keyed/type/fingerprint — NOT namespace or serverId (those live
- * only in the d-tag, outside the blob). Without step 7, an attacker holding any genuinely
- * server-signed blob could re-wrap it under a DIFFERENT d-tag (e.g. a different `serverId`), sign
- * the OUTER event with their OWN key, and `parseFilterPublication` would still return
- * `signerPubkeyHex` = the real server's key — falsely showing that server's presence at a pool it
- * never published to. NIP-01's event signature DOES cover every tag (d, n, epoch, keyed) via the
- * event id, so requiring `event.pubkey === signerPubkeyHex` transitively binds the SIGNED blob's
- * provenance identity to the namespace/serverId the event asserts — the outer signature now
- * "covers" them by being from the same key. `opts.requireAuthorIsSigner: false` opts back out for a
- * caller with a different trust model (e.g. an aggregator that intentionally republishes under its
- * own key); this is a BREAKING default-behaviour change from the pre-M2 shape (a cross-serverId
- * republish that used to parse now returns `null` unless the caller opts out) — see CHANGELOG.
- *
- * EPOCH/KEYED ARE READ FROM THE SIGNED BLOB, NOT THE EVENT TAGS (rollback hardening). The KFLT blob
- * header carries the epoch + keyed flag COVERED BY THE IN-BLOB SCHNORR SIGNATURE; the event tags are
- * UNSIGNED-by-the-server (the republisher controls them). A malicious republisher can wrap the
- * server's OLD signed blob (in-blob epoch=5) in a NEW event they sign, with an `epoch` tag forged to
- * 9999 — `verifyEvent` passes (their key), the in-blob sig is still the real server's — so trusting
- * the tag for the `minEpoch` check would let a STALE blob roll back the consumer. We therefore use the
- * blob's `f.epoch`/`f.keyed` (authoritative) for BOTH the returned `FilterPublication` and the
- * rollback check, and reject outright if the (optional) tags disagree with the signed values.
- *
- * Returns the namespace/serverId (from the d-tag — NOT in the blob, so the tag is authoritative
- * there), the SIGNED epoch + keyed (from the blob), the decoded blob, and the in-blob
- * `signerPubkeyHex` for the consumer's pin check.
- */
 /** Why `parseFilterPublicationResult` rejected an event — one code per internal `return { ok: false }`
  *  path, in the SAME order `parseFilterPublication`'s doc comment numbers its checks:
  *   1. `bad-signature`             — the Nostr event signature is invalid (`verifyEvent`).
@@ -420,6 +366,60 @@ export function parseFilterPublicationResult(
   }
 }
 
+/**
+ * Parse + verify a filter publication. Returns `null` (never throws) on ANY failure, in order:
+ *   1. the Nostr event signature is invalid (`verifyEvent`);
+ *   2. the kind is not `KINDRED_FILTER_KIND`;
+ *   3. the base64 content is missing/undecodable, or the blob exceeds tessera-kit's 64 MiB cap;
+ *   4. the IN-BLOB Schnorr provenance signature is invalid (`verifyFilterBlob`) — the §10 invariant;
+ *   5. the blob does not re-parse as a MembershipFilter (`parseFilter` throws → tampered header);
+ *   6. the d-tag does not carry the `kindred:members:<ns>:<server>` shape, OR the `n` tag is absent
+ *      or does not equal the namespace recovered from the d-tag;
+ *   7. `opts.requireAuthorIsSigner` (default `true`) and `event.pubkey !== signerPubkeyHex`
+ *      (namespace/serverId binding — see below);
+ *   8. the event's `epoch`/`keyed` TAGS are present and DISAGREE with the blob's SIGNED values
+ *      (defense-in-depth tampering signal);
+ *   9. `opts.minEpoch` is set and the blob's SIGNED epoch `<= minEpoch` (monotonicity — rollback
+ *      defense).
+ *
+ * `minEpoch` IS STRICT (`<=`, not `<`) — RE-READING THE SAME CURRENT PUBLICATION RETURNS `null` (L7
+ * audit finding). If a consumer tracks `minEpoch` as "the last epoch I successfully accepted" and
+ * later re-fetches that SAME (unchanged) publication — a normal poll, not an attack — this function
+ * returns `null` for it, indistinguishable from a genuine forgery/rollback attempt (this function
+ * has no reason codes to tell the two apart — seeing one is not, on its own, evidence of anything).
+ * This is deliberate: monotonicity must be strict for the rollback defense to mean anything (`<`
+ * would accept a byte-for-byte replay of the current epoch as if it were new). If a consumer wants
+ * to distinguish "no change" from "rejected", track the LAST epoch it observed (not "accepted") and
+ * pass `lastObservedEpoch - 1` as `minEpoch`, or compare `epoch` against its own cached value BEFORE
+ * calling this function and skip the call entirely when nothing changed.
+ *
+ * NAMESPACE/SERVERID BINDING (M2 audit finding). The KFLT blob's in-blob Schnorr signature (§10
+ * invariant, step 4) covers epoch/keyed/type/fingerprint — NOT namespace or serverId (those live
+ * only in the d-tag, outside the blob). Without step 7, an attacker holding any genuinely
+ * server-signed blob could re-wrap it under a DIFFERENT d-tag (e.g. a different `serverId`), sign
+ * the OUTER event with their OWN key, and `parseFilterPublication` would still return
+ * `signerPubkeyHex` = the real server's key — falsely showing that server's presence at a pool it
+ * never published to. NIP-01's event signature DOES cover every tag (d, n, epoch, keyed) via the
+ * event id, so requiring `event.pubkey === signerPubkeyHex` transitively binds the SIGNED blob's
+ * provenance identity to the namespace/serverId the event asserts — the outer signature now
+ * "covers" them by being from the same key. `opts.requireAuthorIsSigner: false` opts back out for a
+ * caller with a different trust model (e.g. an aggregator that intentionally republishes under its
+ * own key); this is a BREAKING default-behaviour change from the pre-M2 shape (a cross-serverId
+ * republish that used to parse now returns `null` unless the caller opts out) — see CHANGELOG.
+ *
+ * EPOCH/KEYED ARE READ FROM THE SIGNED BLOB, NOT THE EVENT TAGS (rollback hardening). The KFLT blob
+ * header carries the epoch + keyed flag COVERED BY THE IN-BLOB SCHNORR SIGNATURE; the event tags are
+ * UNSIGNED-by-the-server (the republisher controls them). A malicious republisher can wrap the
+ * server's OLD signed blob (in-blob epoch=5) in a NEW event they sign, with an `epoch` tag forged to
+ * 9999 — `verifyEvent` passes (their key), the in-blob sig is still the real server's — so trusting
+ * the tag for the `minEpoch` check would let a STALE blob roll back the consumer. We therefore use the
+ * blob's `f.epoch`/`f.keyed` (authoritative) for BOTH the returned `FilterPublication` and the
+ * rollback check, and reject outright if the (optional) tags disagree with the signed values.
+ *
+ * Returns the namespace/serverId (from the d-tag — NOT in the blob, so the tag is authoritative
+ * there), the SIGNED epoch + keyed (from the blob), the decoded blob, and the in-blob
+ * `signerPubkeyHex` for the consumer's pin check.
+ */
 export function parseFilterPublication(
   event: NostrEvent,
   opts?: { minEpoch?: number; requireAuthorIsSigner?: boolean },
