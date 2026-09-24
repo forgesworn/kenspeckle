@@ -43,22 +43,30 @@ const HEX64 = /^[0-9a-f]{64}$/i
 // port, userinfo, a path/query/fragment, or a bare IP literal — turning `resolveKen` into an
 // arbitrary-URL fetch for whoever can get a `nip05` field into an entry (sync, a backup file, a
 // future rail). This is the SINGLE source of truth for the strict shape; every entry point that can
-// reach `resolveNip05` (parse, `pinKen`, `pinKenFromNip05`, and `resolveNip05` itself as the
-// last-line choke point) validates through `validateNip05`.
+// reach `resolveNip05` (`pinKen`, `pinKenFromNip05`, `resolveKen`, and `resolveNip05` itself as the
+// last-line choke point) validates through `validateNip05`. Parse/import only type-check `nip05`, so
+// a value 0.1.x stored still restores; `resolveKen` treats one that fails here as unresolvable.
 const NIP05_LOCAL = /^[a-z0-9\-_.]+$/i
 // RFC-1035-shaped DNS label: alnum, optional interior hyphens, no leading/trailing hyphen.
 const DOMAIN_LABEL = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
 // At least two labels (rejects a bare single-label host like `localhost` as a side effect).
 const DOMAIN_RE = new RegExp(`^${DOMAIN_LABEL}(?:\\.${DOMAIN_LABEL})+$`, 'i')
-const IPV4_LITERAL = /^\d{1,3}(?:\.\d{1,3}){3}$/
+// The last label (the TLD) must be letters only (2–63) or a punycode `xn--` label. This is what
+// rejects IPv4 in EVERY spelling the WHATWG URL parser accepts — dotted-quad, the shorthand forms
+// (`127.1`, `10.1`, `192.168.1`), octal (`0177.0.0.1`) and hex (`0x7f.1`) — since the URL parser
+// treats a host whose last label is numeric as an IPv4 address and would otherwise turn
+// `x@127.1` into a fetch of 127.0.0.1.
+const TLD_RE = /^(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$/i
 
 /**
  * Validate a strict NIP-05 `local@domain` shape and return it unchanged.
  *
  * Exactly one `@`; the local part matches NIP-05's allowed characters; the domain is DNS-hostname
- * shaped ONLY — no port, no userinfo, no path/query/fragment, and not a bare IPv4 literal (a NIP-05
- * domain names a host, not a network endpoint; an IPv6 literal is already rejected by the charset —
- * `[`/`]`/`:` are not DNS-label characters).
+ * shaped ONLY — at least two labels, no port, no userinfo, no path/query/fragment, and a last label
+ * that is alphabetic (2–63 letters) or punycode (`xn--…`). That rules out an IPv4 literal in any
+ * form, including shorthand such as `127.1` or `0x7f.1` (a NIP-05 domain names a host, not a
+ * network endpoint); an IPv6 literal is already rejected by the charset — `[`/`]`/`:` are not
+ * DNS-label characters.
  *
  * @throws with `field` named in the message, for a non-string or malformed value.
  */
@@ -75,7 +83,7 @@ export function validateNip05(v: unknown, field = 'nip05'): string {
   if (!NIP05_LOCAL.test(local)) {
     throw new Error(`kenspeckle: ${field} local part is invalid`)
   }
-  if (!DOMAIN_RE.test(domain) || IPV4_LITERAL.test(domain)) {
+  if (!DOMAIN_RE.test(domain) || !TLD_RE.test(domain.slice(domain.lastIndexOf('.') + 1))) {
     throw new Error(
       `kenspeckle: ${field} domain must be a plain hostname (no port, credentials, path, or IP literal)`,
     )
@@ -102,30 +110,47 @@ const KEN_ROTATION_VIA = new Set(['nip05', 'announcement', 'manual'])
 
 // --- length caps (L8 audit finding) -------------------------------------------------------------
 //
-// Only `corroborations` had an upper bound; `displayName`, `provenance.locator`, and
-// `annotations.note` did not, despite being attacker/disk-controlled strings on the SAME untrusted
-// input path. An unbounded string field on a restored backup or a synced entry is the same
-// memory-amplification surface the `MAX_CORROBORATIONS` cap exists to close.
-const MAX_DISPLAY_NAME_LEN = 256
-const MAX_LOCATOR_LEN = 1024
-const MAX_NOTE_LEN = 2_000
+// `displayName` and `provenance.locator` had no upper bound. The caps are enforced on the paths
+// that CREATE or MUTATE an entry (`pinKen`/`addCorroboration` in ./ken, `landReturnedKen` in
+// ./companion-rail), NOT on parse/import: an entry 0.1.x wrote with a longer string must still
+// restore, because `importEntries` is all-or-nothing and one over-length field would lose the whole
+// backup. Every cap is measured in Unicode CODE POINTS — one unit everywhere — so a builder that
+// slices by code point can never mint a value a UTF-16 `.length` check would call over-length.
+export const MAX_DISPLAY_NAME_LEN = 256
+export const MAX_LOCATOR_LEN = 1024
+
+/** Length of `s` in Unicode code points (a surrogate pair counts once). */
+export function codePointLength(s: string): number {
+  let n = 0
+  for (const _ of s) n++
+  return n
+}
 
 /**
- * Enforce `MAX_LOCATOR_LEN` on an already-`validateProvenance`d provenance and return it unchanged.
+ * Enforce `MAX_LOCATOR_LEN` (code points) on an already-`validateProvenance`d provenance and return
+ * it unchanged.
  *
  * Deliberately NOT folded into `validateProvenance` itself: `validateProvenance` is also the
  * canonical structural check `./companion-rail`'s `landReturnedKen` runs on a RAW claimed locator
  * BEFORE it truncates that locator to `RETURN_LOCATOR_MAX` (512) and namespaces it under
  * `companion:<appName>:`. Capping length inside `validateProvenance` would reject a legitimately
- * over-length raw claim before that module ever got to truncate it. This wrapper is applied only at
- * kenspeckle's OWN entry/parse points (`validateEntryShape`, `pinKen`/`addCorroboration` in ./ken),
- * where the locator is already final and nothing downstream is going to shorten it.
+ * over-length raw claim before that module ever got to truncate it. This wrapper is applied only on
+ * creation paths (`pinKen`/`addCorroboration` in ./ken, the final locators `landReturnedKen` emits),
+ * where the locator is final and nothing downstream is going to shorten it.
  */
 export function capLocator(p: KenProvenance): KenProvenance {
-  if (p.locator.length > MAX_LOCATOR_LEN) {
-    throw new Error(`kenspeckle ken: provenance.locator exceeds ${MAX_LOCATOR_LEN} chars`)
+  if (codePointLength(p.locator) > MAX_LOCATOR_LEN) {
+    throw new Error(`kenspeckle ken: provenance.locator exceeds ${MAX_LOCATOR_LEN} code points`)
   }
   return p
+}
+
+/** Enforce `MAX_DISPLAY_NAME_LEN` (code points) on a creation path and return the value unchanged. */
+export function capDisplayName<T extends string | undefined>(v: T): T {
+  if (v !== undefined && (typeof v !== 'string' || codePointLength(v) > MAX_DISPLAY_NAME_LEN)) {
+    throw new Error(`kenspeckle: displayName must be a string of at most ${MAX_DISPLAY_NAME_LEN} code points`)
+  }
+  return v
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -151,13 +176,10 @@ function reqFiniteNumber(o: Record<string, unknown>, field: string): number {
   return v
 }
 
-function optString(o: Record<string, unknown>, field: string, maxLen?: number): string | undefined {
+function optString(o: Record<string, unknown>, field: string): string | undefined {
   const v = o[field]
   if (v === undefined) return undefined
   if (typeof v !== 'string') throw new Error(`kenspeckle entry: ${field} must be a string`)
-  if (maxLen !== undefined && v.length > maxLen) {
-    throw new Error(`kenspeckle entry: ${field} exceeds ${maxLen} chars`)
-  }
   return v
 }
 
@@ -231,9 +253,6 @@ function validateAnnotations(v: unknown): PrivateAnnotations {
   }
   if (v.note !== undefined) {
     if (typeof v.note !== 'string') throw new Error('kenspeckle entry: annotations.note must be a string')
-    if (v.note.length > MAX_NOTE_LEN) {
-      throw new Error(`kenspeckle entry: annotations.note exceeds ${MAX_NOTE_LEN} chars`)
-    }
     out.note = v.note
   }
   if (v.blocked !== undefined) {
@@ -264,7 +283,8 @@ export function validateEntryShape(raw: unknown, allowAnnotations: boolean): Kin
     throw new Error('kenspeckle entry: pubkey must not equal ownerPubkey')
   }
   const addedAt = reqFiniteNumber(raw, 'addedAt')
-  const displayName = optString(raw, 'displayName', MAX_DISPLAY_NAME_LEN)
+  // No length cap here — see "length caps" above: caps apply on creation paths, not parse/import.
+  const displayName = optString(raw, 'displayName')
 
   let annotations: PrivateAnnotations | undefined
   if (allowAnnotations && raw.annotations !== undefined) {
@@ -297,46 +317,42 @@ export function validateEntryShape(raw: unknown, allowAnnotations: boolean): Kin
     const entry: KithEntry = { tier: 'kith', pubkey, ownerPubkey, addedAt, sharedSecret, verifiedAt }
     if (displayName !== undefined) entry.displayName = displayName
     if (annotations !== undefined) entry.annotations = annotations
-    // bondAssertion is optional metadata; preserve it shallowly if structurally present. A PRESENT
-    // but malformed `bondAssertion` now THROWS rather than being silently dropped (L8 audit finding
-    // — this previously behaved differently from every other malformed-evidence case in this file,
-    // e.g. `corroborations`, which throws on the first bad element rather than discarding it).
-    if (raw.bondAssertion !== undefined) {
-      if (!isRecord(raw.bondAssertion)) {
-        throw new Error('kenspeckle kith: bondAssertion must be an object')
-      }
+    // bondAssertion is optional metadata; preserve it shallowly if structurally valid, and DROP it
+    // (keeping the entry) if it is malformed — the 0.1.x behaviour, kept so a backup 0.1.x wrote
+    // still restores. Dropping is safe: `bondAssertion` is never required and its absence proves
+    // nothing (see the L9 note at the top of this file). A non-string `theirsId` is dropped on its
+    // own, also as 0.1.x did.
+    if (isRecord(raw.bondAssertion)) {
       const ba = raw.bondAssertion
-      if (typeof ba.mineId !== 'string') {
-        throw new Error('kenspeckle kith: bondAssertion.mineId must be a string')
-      }
-      if (typeof ba.relay !== 'string') {
-        throw new Error('kenspeckle kith: bondAssertion.relay must be a string')
-      }
-      if (typeof ba.createdAt !== 'number' || !Number.isFinite(ba.createdAt)) {
-        throw new Error('kenspeckle kith: bondAssertion.createdAt must be a finite number')
-      }
-      if (ba.theirsId !== undefined && typeof ba.theirsId !== 'string') {
-        throw new Error('kenspeckle kith: bondAssertion.theirsId must be a string')
-      }
-      entry.bondAssertion = {
-        mineId: ba.mineId,
-        relay: ba.relay,
-        createdAt: ba.createdAt,
-        ...(ba.theirsId !== undefined ? { theirsId: ba.theirsId } : {}),
+      if (
+        typeof ba.mineId === 'string' &&
+        typeof ba.relay === 'string' &&
+        typeof ba.createdAt === 'number' &&
+        Number.isFinite(ba.createdAt)
+      ) {
+        entry.bondAssertion = {
+          mineId: ba.mineId,
+          relay: ba.relay,
+          createdAt: ba.createdAt,
+          ...(typeof ba.theirsId === 'string' ? { theirsId: ba.theirsId } : {}),
+        }
       }
     }
     return entry
   }
 
   // tier === 'ken'
-  const provenance = capLocator(validateProvenance(raw.provenance))
+  // No locator length cap on parse — see "length caps" above.
+  const provenance = validateProvenance(raw.provenance)
   const entry: KenEntry = { tier: 'ken', pubkey, ownerPubkey, addedAt, provenance }
   if (displayName !== undefined) entry.displayName = displayName
   if (annotations !== undefined) entry.annotations = annotations
-  // Strict NIP-05 shape (M1 audit finding): `resolveKen`/`resolveNip05` build a fetch URL straight
-  // from this field, so an untrusted/imported entry must not be able to smuggle a port, userinfo, a
-  // path/query/fragment, or an IP literal into it.
-  if (raw.nip05 !== undefined) entry.nip05 = validateNip05(raw.nip05, 'nip05')
+  // `nip05` is only type-checked here, NOT strictly validated: 0.1.x accepted permissive values
+  // (e.g. `x@localhost`) and an entry carrying one must still restore. The SSRF guard (M1 audit
+  // finding) lives where the value is USED: `resolveKen` treats a nip05 that fails `validateNip05`
+  // as unresolvable and never fetches, and `resolveNip05` re-validates as the last-line choke point.
+  const nip05 = optString(raw, 'nip05')
+  if (nip05 !== undefined) entry.nip05 = nip05
   if (raw.lastResolvedAt !== undefined) {
     if (typeof raw.lastResolvedAt !== 'number' || !Number.isFinite(raw.lastResolvedAt)) {
       throw new Error('kenspeckle ken: lastResolvedAt must be a finite number')
@@ -347,21 +363,27 @@ export function validateEntryShape(raw: unknown, allowAnnotations: boolean): Kin
     if (!Array.isArray(raw.previousPubkeys) || !raw.previousPubkeys.every((p) => typeof p === 'string' && HEX64.test(p))) {
       throw new Error('kenspeckle ken: previousPubkeys must be an array of 64-hex strings')
     }
-    // Lowercase each element (same equality-safety reason as reqHex64).
-    entry.previousPubkeys = (raw.previousPubkeys as string[]).map((p) => p.toLowerCase())
-    // H3 invariant: the CURRENT pin must never also sit in its own rotation history. If it did,
-    // `attributeSignature` would reject the legitimate current key as `'rotated-away-key'` (that
-    // check runs before the current-pin check) — the exact self-contradiction H2/H3 close off.
-    if (entry.previousPubkeys.includes(pubkey)) {
-      throw new Error('kenspeckle ken: pubkey must not appear in previousPubkeys')
+    // Lowercase each element (same equality-safety reason as reqHex64), then NORMALISE: drop the
+    // current pin and de-duplicate (first occurrence wins, so audit order is kept). H3 invariant:
+    // the CURRENT pin must never also sit in its own rotation history, or `attributeSignature`
+    // would reject the legitimate current key as `'rotated-away-key'` (that check runs before the
+    // current-pin check). 0.1.x's double-accept bug (H2) wrote exactly that state, so parse
+    // repairs it rather than rejecting the entry and, with it, the whole backup.
+    const previousPubkeys: string[] = []
+    for (const p of raw.previousPubkeys as string[]) {
+      const key = p.toLowerCase()
+      if (key !== pubkey && !previousPubkeys.includes(key)) previousPubkeys.push(key)
     }
+    entry.previousPubkeys = previousPubkeys
   }
   if (raw.rotation !== undefined) {
     entry.rotation = validateRotation(raw.rotation)
-    // L8 audit finding: a degenerate self-rotation (proposing the CURRENT pin as its own successor)
-    // was previously accepted. `acceptKenRotation` also guards this at accept-time (H2); this closes
-    // it at parse-time for a stored/imported entry too.
-    if (entry.rotation.newPubkey === pubkey) {
+    // L8 audit finding: a degenerate self-rotation (a PENDING proposal of the CURRENT pin as its own
+    // successor) is rejected. An ACCEPTED rotation is the opposite case: `acceptKenRotation` sets
+    // `pubkey = rotation.newPubkey` and keeps the record with `accepted: true`, so equality there is
+    // the normal post-accept state and must round-trip. The double-accept guard in
+    // `acceptKenRotation` (H2) still refuses to accept it again.
+    if (!entry.rotation.accepted && entry.rotation.newPubkey === pubkey) {
       throw new Error('kenspeckle ken: rotation.newPubkey must not equal the current pubkey')
     }
   }
@@ -384,7 +406,7 @@ export function validateEntryShape(raw: unknown, allowAnnotations: boolean): Kin
     if (raw.corroborations.length > MAX_CORROBORATIONS) {
       throw new Error(`kenspeckle ken: at most ${MAX_CORROBORATIONS} corroborations`)
     }
-    entry.corroborations = raw.corroborations.map((c) => capLocator(validateProvenance(c)))
+    entry.corroborations = raw.corroborations.map((c) => validateProvenance(c))
   }
   if (raw.revoked !== undefined) {
     if (typeof raw.revoked !== 'boolean') throw new Error('kenspeckle ken: revoked must be a boolean')

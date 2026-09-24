@@ -40,7 +40,7 @@ import { bytesToHex, randomBytes } from '@noble/hashes/utils.js'
 import { verifyEvent } from 'nostr-tools/pure'
 import { COMPANION_LOCATOR_PREFIX } from './types.js'
 import type { NostrEvent, KenEntry, KenProvenance } from './types.js'
-import { validateNip05, validateProvenance, capLocator, MAX_CORROBORATIONS } from './validate.js'
+import { validateNip05, validateProvenance, capLocator, capDisplayName, MAX_CORROBORATIONS } from './validate.js'
 
 /** Exactly 64 hex chars (case-insensitive; callers lowercase on the way out). */
 const HEX64 = /^[0-9a-f]{64}$/i
@@ -93,11 +93,14 @@ function validateFirstPartyProvenance(v: KenProvenance): KenProvenance {
  * Runs the SAME `validateProvenance` + `MAX_CORROBORATIONS` cap + reserved-`companion:`-prefix
  * rejection as `importEntries`/`parseEntry` (M4/M5 audit findings) — a builder must not be able to
  * mint an entry the parser would then refuse (which, for a corroboration cap violation, meant a
- * roster that exported fine could not be restored, losing the whole backup).
+ * roster that exported fine could not be restored, losing the whole backup). It also enforces the
+ * creation-path rules parse does not: the `MAX_DISPLAY_NAME_LEN` / `MAX_LOCATOR_LEN` caps (in code
+ * points) and a strict `nip05`, plus the self-entry rejection parse shares.
  *
  * @returns A fresh `KenEntry` with `tier:'ken'`, integer `addedAt`, the supplied provenance, and the
  *          optional `displayName` / `nip05` when present.
- * @throws on a malformed provenance/corroboration, a `companion:`-prefixed locator, more than
+ * @throws on `pubkeyHex === ownerPubkeyHex`, a malformed provenance/corroboration, a
+ *         `companion:`-prefixed locator, an over-length `displayName` or locator, more than
  *         `MAX_CORROBORATIONS` corroborations, or a malformed `nip05`.
  */
 export function pinKen(p: {
@@ -112,6 +115,10 @@ export function pinKen(p: {
 }): KenEntry {
   const pubkey = normHex64(p.pubkeyHex, 'pubkeyHex')
   const ownerPubkey = normHex64(p.ownerPubkeyHex, 'ownerPubkeyHex')
+  // A self-entry (recognising my OWN persona) is never a relationship; parse rejects it too.
+  if (pubkey === ownerPubkey) {
+    throw new Error('ken: pubkeyHex must not equal ownerPubkeyHex')
+  }
   const provenance = validateFirstPartyProvenance(p.provenance)
 
   const entry: KenEntry = {
@@ -121,7 +128,7 @@ export function pinKen(p: {
     addedAt: nowSec(),
     provenance,
   }
-  if (p.displayName !== undefined) entry.displayName = p.displayName
+  if (p.displayName !== undefined) entry.displayName = capDisplayName(p.displayName)
   // Only materialise `corroborations` when there is something to record: a caller passing `[]` must
   // not make the new entry serialise differently from one pinned without the argument at all.
   if (p.corroborations !== undefined && p.corroborations.length > 0) {
@@ -243,6 +250,16 @@ const NIP05_FETCH_TIMEOUT_MS = 10_000
  *  a well-known `nostr.json` is a small, bounded document, so an unbounded body is itself a signal
  *  something is wrong, and parsing it would be an unbounded-allocation surface either way. */
 const NIP05_MAX_BODY_CHARS = 1_048_576 // 1 MiB of JSON text
+
+/** True when `v` passes `validateNip05` — used where a bad value means "unresolvable", not an error. */
+function isStrictNip05(v: string): boolean {
+  try {
+    validateNip05(v, 'nip05')
+    return true
+  } catch {
+    return false
+  }
+}
 
 /**
  * Resolve a NIP-05 identifier to a single key over HTTPS, with full untrusted-input hardening.
@@ -470,7 +487,8 @@ export function attributeSignature(
 /**
  * Re-resolve the entry's NIP-05 and PROPOSE (never auto-flip) a rotation if the key changed.
  *
- * If the entry has no `nip05`, returns it UNCHANGED (same reference — no network call). If the entry
+ * If the entry has no `nip05`, or its stored `nip05` fails `validateNip05` (an unresolvable value
+ * 0.1.x accepted, e.g. `x@localhost`), returns it UNCHANGED (same reference — no network call). If the entry
  * is `revoked`, ALSO returns it UNCHANGED (same reference — no network call): a revoked pin is dead
  * (`attributeSignature`/`verifyKeyControl` both fail closed on it regardless), so proposing a
  * rotation for it is nonsensical and would only invite an `acceptKenRotation` that resurrects a
@@ -497,6 +515,9 @@ export async function resolveKen(
 ): Promise<KenEntry> {
   if (entry.nip05 === undefined) return entry
   if (entry.revoked) return entry
+  // A stored nip05 that fails the strict shape (parse/import keep values 0.1.x accepted, e.g.
+  // `x@localhost`) is unresolvable: treated like "no nip05", and NEVER fetched (M1 SSRF guard).
+  if (!isStrictNip05(entry.nip05)) return entry
   const resolved = await resolveNip05(entry.nip05, fetch)
   const at = nowSec()
   if (resolved === entry.pubkey) {

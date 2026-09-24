@@ -25,7 +25,9 @@ import {
   dropKen,
 } from './ken.js'
 import type { KenEntry, NostrEvent } from './types.js'
-import { MAX_CORROBORATIONS } from './validate.js'
+import { MAX_CORROBORATIONS, validateNip05 } from './validate.js'
+import { parseEntry, serializeEntryForSync } from './model.js'
+import { exportEntriesEncrypted, importEntries } from './backup.js'
 
 // --- Fixtures -------------------------------------------------------------------------------------
 
@@ -1004,5 +1006,129 @@ describe('summarizeKenProvenance', () => {
     const before = JSON.stringify(entry)
     summarizeKenProvenance(entry)
     expect(JSON.stringify(entry)).toBe(before)
+  })
+})
+
+// --- review fixes: accepted rotation round-trip, creation caps, legacy tolerance, IP shorthand ----
+
+const BACKUP_KEY = new Uint8Array(32).fill(7)
+const EMOJI = '\u{1F600}'
+
+describe('accepted rotation survives serialize → parse → backup restore', () => {
+  it('pin → propose → accept → serializeEntryForSync → parseEntry → importEntries round-trips', async () => {
+    const original = freshKeypair()
+    const rotated = freshKeypair()
+    const pinned = pinKen({
+      pubkeyHex: original.pk,
+      ownerPubkeyHex: OWNER,
+      nip05: 'bob@example.com',
+      provenance: { source: 'nip05', locator: 'bob@example.com', confirmedAt: 1 },
+    })
+    const proposed = await resolveKen(pinned, fakeFetchJson({ names: { bob: rotated.pk } }))
+    const accepted = acceptKenRotation(proposed)
+    expect(accepted.pubkey).toBe(rotated.pk)
+    expect(accepted.rotation).toMatchObject({ newPubkey: rotated.pk, accepted: true })
+
+    const parsed = parseEntry(serializeEntryForSync(accepted))
+    expect(parsed).toEqual(accepted)
+    expect(importEntries(exportEntriesEncrypted([parsed], BACKUP_KEY), BACKUP_KEY)).toEqual([accepted])
+    // The double-accept guard still holds on the parsed entry.
+    expect(() => acceptKenRotation(parsed as KenEntry)).toThrow(/already been accepted/)
+  })
+
+  it('a PENDING rotation whose newPubkey equals the current pin is still rejected at parse', () => {
+    const k = freshKeypair().pk
+    const raw = {
+      tier: 'ken', pubkey: k, ownerPubkey: OWNER, addedAt: 1,
+      provenance: { source: 'manual', locator: 'x', confirmedAt: 1 },
+      rotation: { newPubkey: k, observedAt: 2, via: 'nip05', accepted: false },
+    }
+    expect(() => parseEntry(JSON.stringify(raw))).toThrow(/rotation\.newPubkey/)
+  })
+})
+
+describe('pinKen — creation caps (code points) and self-pin', () => {
+  const prov = { source: 'in-person' as const, locator: 'met at the meetup', confirmedAt: 1 }
+
+  it('caps displayName at 256 code points, not UTF-16 units', () => {
+    const k = freshKeypair().pk
+    expect(pinKen({ pubkeyHex: k, ownerPubkeyHex: OWNER, provenance: prov, displayName: EMOJI.repeat(256) }).displayName).toBe(EMOJI.repeat(256))
+    expect(() => pinKen({ pubkeyHex: k, ownerPubkeyHex: OWNER, provenance: prov, displayName: 'a'.repeat(257) })).toThrow(/displayName/)
+  })
+
+  it('caps the provenance locator at 1024 code points', () => {
+    const k = freshKeypair().pk
+    expect(pinKen({ pubkeyHex: k, ownerPubkeyHex: OWNER, provenance: { ...prov, locator: EMOJI.repeat(1024) } }).provenance.locator).toBe(EMOJI.repeat(1024))
+    expect(() => pinKen({ pubkeyHex: k, ownerPubkeyHex: OWNER, provenance: { ...prov, locator: 'a'.repeat(1025) } })).toThrow(/locator/)
+  })
+
+  it('rejects pinning the owner persona itself', () => {
+    expect(() => pinKen({ pubkeyHex: OWNER.toUpperCase(), ownerPubkeyHex: OWNER, provenance: prov })).toThrow(/ownerPubkey/)
+  })
+})
+
+describe('parse / import stay tolerant of data 0.1.x wrote', () => {
+  const k = freshKeypair().pk
+  const legacyKen = {
+    tier: 'ken', pubkey: k, ownerPubkey: OWNER, addedAt: 1,
+    provenance: { source: 'web', locator: 'w'.repeat(2000), confirmedAt: 1 },
+    displayName: 'n'.repeat(300),
+    nip05: 'x@localhost',
+    previousPubkeys: ['cc'.repeat(32), k, 'cc'.repeat(32), 'dd'.repeat(32)],
+    annotations: { note: 'long '.repeat(1000) },
+  }
+
+  it('accepts over-length strings and a permissive nip05, and normalises previousPubkeys', () => {
+    const parsed = parseEntry(JSON.stringify(legacyKen)) as KenEntry
+    expect(parsed.displayName).toBe(legacyKen.displayName)
+    expect(parsed.provenance.locator).toBe(legacyKen.provenance.locator)
+    expect(parsed.nip05).toBe('x@localhost')
+    expect(parsed.previousPubkeys).toEqual(['cc'.repeat(32), 'dd'.repeat(32)])
+  })
+
+  it('restores a backup holding such an entry, annotations included', () => {
+    const restored = importEntries(exportEntriesEncrypted([legacyKen as unknown as KenEntry], BACKUP_KEY), BACKUP_KEY)
+    expect(restored).toHaveLength(1)
+    expect(restored[0]!.annotations?.note).toBe(legacyKen.annotations.note)
+  })
+
+  it('drops a malformed bondAssertion instead of rejecting the entry', () => {
+    const kith = {
+      tier: 'kith', pubkey: k, ownerPubkey: OWNER, addedAt: 1, sharedSecret: 'ee'.repeat(32), verifiedAt: 1,
+      bondAssertion: { mineId: 42, relay: 'wss://r' },
+    }
+    const parsed = parseEntry(JSON.stringify(kith))
+    expect(parsed.tier).toBe('kith')
+    expect('bondAssertion' in parsed).toBe(false)
+  })
+
+  it('still rejects the security-relevant shapes: bad hex and a self-entry', () => {
+    expect(() => parseEntry(JSON.stringify({ ...legacyKen, pubkey: 'zz'.repeat(32) }))).toThrow(/pubkey/)
+    expect(() => parseEntry(JSON.stringify({ ...legacyKen, pubkey: OWNER }))).toThrow(/ownerPubkey/)
+  })
+
+  it('resolveKen treats a stored nip05 that fails strict validation as unresolvable, without fetching', async () => {
+    const parsed = parseEntry(JSON.stringify(legacyKen)) as KenEntry
+    let called = false
+    const fetch = (async () => {
+      called = true
+      throw new Error('must not fetch')
+    }) as typeof globalThis.fetch
+    const out = await resolveKen(parsed, fetch)
+    expect(out).toBe(parsed)
+    expect(called).toBe(false)
+  })
+})
+
+describe('validateNip05 — IP shorthand and numeric TLDs', () => {
+  it.each(['x@127.1', 'x@0x7f.1', 'x@10.1', 'x@192.168.1', 'x@0177.0.0.1', 'x@1.2.3.4', 'x@example.123', 'x@example.0x7f', 'x@example.c', 'x@example.c0m'])(
+    'rejects %s',
+    (v) => {
+      expect(() => validateNip05(v)).toThrow(/domain/)
+    },
+  )
+
+  it.each(['x@example.com', 'x@sub.example.org', 'x@xn--bcher-kva.example', 'x@example.xn--p1ai', 'x@123.example.com'])('accepts %s', (v) => {
+    expect(validateNip05(v)).toBe(v)
   })
 })
