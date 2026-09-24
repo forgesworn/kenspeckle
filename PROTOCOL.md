@@ -273,7 +273,12 @@ NIP-05 handle). No shared secret, no mutual ceremony.
 
 NIP-05 resolution fetches `https://<domain>/.well-known/nostr.json?name=<local>`
 (**HTTPS only**; the URL is constructed from validated parts, never reflected from
-input). The response body is attacker-influenced (the domain operator controls
+input). Every entry point that can reach the fetch — `pinKen`, `pinKenFromNip05`,
+`parseEntry` / `importEntries`, and `resolveNip05` itself — runs the **strict**
+`validateNip05`: exactly one `@`, local part `[a-z0-9-_.]+`, and a domain that is a
+plain DNS hostname of at least two labels — no port, no userinfo, no
+path/query/fragment, no IP literal. Local part and domain are lowercased before the
+lookup. The fetch refuses redirects, has a timeout and caps the body size. The response body is attacker-influenced (the domain operator controls
 it), so it is parsed with a runtime type guard: body must be an object,
 `body.names` an object, `body.names[local]` a 64-hex string — anything else throws.
 
@@ -286,6 +291,10 @@ compromises DNS/TLS or the host) can silently swap the published key. Therefore:
   key — a refuse-on-mismatch TOFU pin (you decide to trust the first observation).
 - `resolveKen` treats a later key **change** as an **untrusted signal**: it
   **proposes** a `KenRotation{ accepted:false }` and **never auto-flips** `pubkey`.
+  If the resolved key is one the entry already rotated **away** from (it is in
+  `previousPubkeys`), the proposal carries `rollback: true` — a reverted or
+  compromised domain re-serving an old key. A `revoked` entry is returned unchanged
+  (no fetch).
 - For high-value ken, prefer an **old-key-signed rotation announcement**
   (`KenRotation.announcementEventId`) over a bare NIP-05 change; **always** require
   user confirmation. `acceptKenRotation` is the explicit, user-driven move.
@@ -318,9 +327,14 @@ works — only `content` + sig + pubkey are inspected).
 
 ### 4.3 Rotation, revoke, drop
 
-- `acceptKenRotation` moves the current `pubkey` into `previousPubkeys`, adopts
-  `rotation.newPubkey`, sets `rotation.accepted = true`. **No dual-accept window** —
-  the moment it runs, `attributeSignature` rejects the old key.
+- `acceptKenRotation(entry, opts?)` moves the current `pubkey` into
+  `previousPubkeys`, adopts `rotation.newPubkey`, sets `rotation.accepted = true`.
+  **No dual-accept window** — the moment it runs, `attributeSignature` rejects the
+  old key. It **throws** on a replay (`rotation.accepted` already `true`, or
+  `newPubkey` equal to the current pin) and on a `rollback: true` proposal unless
+  `opts.allowRevert` is `true`. Accepting a revert removes the reverted-to key from
+  `previousPubkeys` first, so the current pin never also appears there (which
+  `validateEntryShape` rejects).
 - `revokeKen` sets `revoked = true` (compromise with no successor); both
   `attributeSignature` and `verifyKeyControl` then fail closed (`reason:'revoked'`,
   checked first).
@@ -367,9 +381,22 @@ Addressable event, `kind 30444`:
 base64 content, or a blob over @forgesworn/tessera-kit's 64 MiB cap (the encoded length is
 capped **before** decode so an oversized payload can't be expanded into memory);
 (4) bad **in-blob Schnorr** provenance signature (`verifyFilterBlob` — the §10
-invariant); (5) d-tag not in `kindred:members:<ns>:<server>` shape; (6) if
-`opts.minEpoch` is set, `epoch <= minEpoch` (monotonicity — replay/rollback
-defence). On success it returns `{ namespace, serverId, blob, keyed, epoch,
+invariant); (5) the blob does not re-parse as a filter; (6) d-tag not in
+`kindred:members:<ns>:<server>` shape, or the `n` tag absent or not equal to the
+namespace recovered from the d-tag; (7) with `opts.requireAuthorIsSigner` (default
+**`true`**), the event author differs from the in-blob signer; (8) the `epoch` /
+`keyed` tags, if present, disagree with the blob's signed values; (9) if
+`opts.minEpoch` is set, the **signed** epoch `<= minEpoch` (monotonicity —
+replay/rollback defence; strict, so re-reading the current publication also
+returns `null`).
+
+Step 7 is what binds `namespace` / `serverId` to the server: the in-blob signature
+covers epoch, keyed flag and fingerprint but **not** the d-tag, so without it anyone
+could re-wrap a genuine server-signed blob under a different `serverId` in an event
+they sign, and still get the real server back as `signerPubkeyHex`. Requiring the
+event author to be that same key makes the outer NIP-01 signature (which covers
+every tag) the server's own. `{ requireAuthorIsSigner: false }` opts out for a
+consumer that trusts a republisher. On success it returns `{ namespace, serverId, blob, keyed, epoch,
 signerPubkeyHex }`, where **`signerPubkeyHex` is the in-blob provenance signer (the
 server's key), NOT the Nostr event author** — the consumer pins/extends-trust on
 that value.
@@ -590,16 +617,26 @@ the signature binds the field values, not a specific byte encoding.
 
 ## 9. Canonical entry serialization (`.` / `serializeEntry`)
 
-`serializeEntry(entry)` produces **byte-stable** canonical JSON: it is built on
-`toWire(entry)` (which structurally strips `annotations`) then a **recursive
-key-sort** (lexicographic; arrays keep order; `undefined` optionals are dropped so
-absent keys never materialise). Two devices therefore serialise **identical bytes**
-for the same entry (cross-device sync, §12.1). The output **never** contains an
-`annotations` key — both because `toWire` removes it and because the sort emits only
-present keys. `parseEntry` runs full field guards (allow-listed tier, 64-hex
-pubkeys, finite timestamps, mutual-tier shared-secret, ken provenance **and each
-ken corroboration**, capped at 64) and never restores annotations (the wire form
-never carried them).
+There are two canonical forms, both **byte-stable** JSON built the same way — a
+projection, then a **recursive key-sort** (lexicographic; arrays keep order;
+`undefined` optionals are dropped so absent keys never materialise), so two devices
+serialise **identical bytes** for the same entry:
+
+| Form | Projection | Strips | Use |
+|------|-----------|--------|-----|
+| `serializeEntry` | `toWire` → `WireEntry` | `annotations` **and** `sharedSecret` | safe to hand to any third party |
+| `serializeEntryForSync` | `toSyncForm` → `SyncEntry` | `annotations` only | the user's **own** devices, over an already-private channel (§12.1) — never published |
+
+Neither output ever contains an `annotations` key. The wire form never contains a
+`sharedSecret`, so a kin/kith `serializeEntry` output does **not** round-trip:
+`parseEntry` requires `sharedSecret` for those tiers and throws. `parseEntry`
+reconstructs the sync form. It runs full field guards: allow-listed tier, 64-hex
+pubkeys, `pubkey ≠ ownerPubkey`, finite timestamps, mutual-tier shared secret, ken
+provenance **and each ken corroboration** (capped at 64), strict NIP-05, a ken whose
+`pubkey` is not in its own `previousPubkeys` and whose `rotation.newPubkey` differs
+from `pubkey`, and length caps on `displayName` (256) and `annotations.note`
+(2000). It never restores annotations. A syntactically valid kith entry is a shape,
+not proof a bond happened: authenticate whatever channel feeds `parseEntry`.
 
 **`corroborations` (optional, ken only).** An array of `KenProvenance` recording
 *additional independent channels* that agree the key belongs to the person;

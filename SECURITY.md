@@ -38,10 +38,12 @@ the primitive assists with — not a guarantee kenspeckle can make.**
 aids. They are **searchable in memory** (`searchEntries`) but MUST NEVER reach a
 wire. This is enforced two ways:
 
-- **Structurally (type level):** `WireEntry = Omit<KindredEntry,'annotations'>`,
-  and a compile-time assertion (`_WireAnnotationsExclusionCheck`) fails the build if
+- **Structurally (type level):** `WireEntry = DistributiveOmit<KindredEntry,
+  'annotations' | 'sharedSecret'>` (and `SyncEntry` omits `annotations`), and a
+  compile-time assertion (`_WireAnnotationsExclusionCheck`) fails the build if
   `WireEntry` ever re-admits `annotations`. `serializeEntry` is typed through
-  `toWire`, so the canonical JSON cannot carry an `annotations` key.
+  `toWire`, and `serializeEntryForSync` through `toSyncForm`, so neither canonical
+  JSON can carry an `annotations` key.
 - **At runtime:** `toWire` strips `annotations`, and the canonical key-sort emits
   only present keys — so `serializeEntry(entryWithAnnotations)` produces JSON with
   **no** `annotations` key (asserted in `model.test.ts`).
@@ -58,7 +60,12 @@ returns garbage.
 
 ### 3. kith shared secrets are never published
 
-A bond's ECDH `sharedSecret` is **never** put on any wire. The optional, consensual
+A bond's ECDH `sharedSecret` is **never** put on any wire. `toWire` /
+`serializeEntry` strip it (as well as `annotations`), so the "wire-safe" form really
+is safe to hand to a third party. The one form that keeps it is
+`toSyncForm` / `serializeEntryForSync`, for syncing a roster between the **user's
+own devices** over a channel that is already private — never publish that output.
+(The encrypted self-backup also keeps it.) The optional, consensual
 "prove we're verified contacts" surface publishes only **co-signed assertions**
 (kind-31000, subject = counterparty pubkey) — **no secret-derived value**. The v1
 `hash(sharedSecret‖counter)` idea is deliberately absent: it was brute-forceable and
@@ -68,7 +75,13 @@ verification without leaking anything derived from the secret.
 ### 4. NIP-05 is a DNS/TLS/HTTP-TOFU anchor, NOT cryptographic key-continuity
 
 `pinKenFromNip05` resolves `https://<domain>/.well-known/nostr.json?name=<local>`
-(**HTTPS only**; body parsed with a strict runtime type guard). NIP-05 proves only
+(**HTTPS only**; no redirects, a timeout, a capped body, parsed with a strict runtime
+type guard). Every path that can reach that fetch — `pinKen`, `pinKenFromNip05`,
+`parseEntry` / `importEntries` and `resolveNip05` itself — validates the identifier
+with the strict `validateNip05`: a plain `local@hostname`, with no port, userinfo,
+path, query, fragment or IP literal, so a crafted `nip05` cannot turn resolution into
+an arbitrary-URL fetch. The companion return rail uses the same validator for claimed
+identifiers. NIP-05 proves only
 that whoever controls that file **says** a name maps to a key. It is a DNS + TLS +
 HTTP **trust-on-first-use (TOFU)** anchor — **not** a cryptographic key-**continuity**
 anchor. The domain operator, or anyone who later compromises DNS/TLS or the host,
@@ -78,7 +91,12 @@ can silently swap the published key. Therefore:
   (refuse-on-mismatch TOFU — you decide to trust the first observation).
 - A later NIP-05 key **change is an untrusted signal**: `resolveKen` **proposes** a
   rotation (`accepted:false`) and **never auto-flips** `pubkey`. Accepting it
-  (`acceptKenRotation`) is an explicit, user-confirmed act.
+  (`acceptKenRotation`) is an explicit, user-confirmed act, and accepting the same
+  rotation twice throws.
+- A change **back** to a key the entry already rotated away from is flagged
+  `rotation.rollback: true` — the signature of a reverted or compromised domain.
+  `acceptKenRotation` refuses it unless called with `{ allowRevert: true }`; a UI
+  should show that case as a warning, not as an ordinary key update.
 - For high-value ken, prefer an **old-key-signed rotation announcement**
   (`KenRotation.announcementEventId`) over a bare NIP-05 change, and **always**
   require user confirmation.
@@ -125,6 +143,14 @@ and a consumer **MUST** check **both** before trusting any hit:
 2. the **in-blob Schnorr provenance signature** (`verifyFilterBlob` from
    @forgesworn/tessera-kit), whose `signerPubkeyHex` the consumer **MUST compare against a
    pinned / out-of-band-known server key**.
+
+By default (`requireAuthorIsSigner: true`) `parseFilterPublication` also requires the
+Nostr event author to **be** the in-blob signer, and the `n` tag to match the d-tag's
+namespace. The in-blob signature does not cover `namespace` / `serverId`; without the
+author check, anyone could re-wrap a genuine server-signed blob under a different
+`serverId` and still get the real server back as `signerPubkeyHex` — showing that
+server at a pool it never published to. Pass `{ requireAuthorIsSigner: false }` only
+if you deliberately trust a republisher.
 
 `parseFilterPublication` returning a non-null result means only that both signatures
 are **internally consistent** — it is **not** trust. Anyone can mint a validly
