@@ -24,6 +24,7 @@ import {
   revokeKen,
   dropKen,
 } from './ken.js'
+import { validateNip05 as validateNip05FromKen } from './ken.js'
 import type { KenEntry, NostrEvent } from './types.js'
 import { MAX_CORROBORATIONS, validateNip05 } from './validate.js'
 import { parseEntry, serializeEntryForSync } from './model.js'
@@ -1207,5 +1208,13 @@ describe('validateNip05 — IP shorthand and numeric TLDs', () => {
 
   it.each(['x@example.com', 'x@sub.example.org', 'x@xn--bcher-kva.example', 'x@example.xn--p1ai', 'x@123.example.com'])('accepts %s', (v) => {
     expect(validateNip05(v)).toBe(v)
+  })
+})
+
+describe('validateNip05 is re-exported from ./ken', () => {
+  it('is the same strict check, usable for pre-validation', () => {
+    expect(validateNip05FromKen).toBe(validateNip05)
+    expect(validateNip05FromKen('alice@example.com')).toBe('alice@example.com')
+    expect(() => validateNip05FromKen('alice@127.1')).toThrow(/domain/)
   })
 })

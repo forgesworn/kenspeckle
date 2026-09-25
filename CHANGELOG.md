@@ -300,6 +300,9 @@ this section, and the individually marked entries in the sections after it.
 
 ### Added
 
+- **`./ken` — `validateNip05` is exported.** The strict `local@domain` check that
+  `pinKen`/`pinKenFromNip05` apply, so consumers can pre-validate user input and
+  show their own error before calling them.
 - **`./bond` — ceremony counter derivation.** `deriveCeremonyCounter(nonceAHex,
   nonceBHex)` resolves the core-M4 open question below: both bond-ceremony
   parties derive the SAME `counter` from their two handshake nonces

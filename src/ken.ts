@@ -42,6 +42,11 @@ import { COMPANION_LOCATOR_PREFIX } from './types.js'
 import type { NostrEvent, KenEntry, KenProvenance } from './types.js'
 import { validateNip05, validateProvenance, capLocator, capDisplayName, MAX_CORROBORATIONS } from './validate.js'
 
+/** The strict NIP-05 shape check `pinKenFromNip05` / `pinKen` apply, re-exported so a consumer can
+ *  pre-validate user input and show its own message before calling them. Returns the value
+ *  unchanged; throws for a non-string or malformed one. */
+export { validateNip05 }
+
 /** Exactly 64 hex chars (case-insensitive; callers lowercase on the way out). */
 const HEX64 = /^[0-9a-f]{64}$/i
 

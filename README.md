@@ -276,7 +276,8 @@ mostRecentAt, oldestAt }`.
 port, no userinfo, no path/query/fragment, and a last label that is alphabetic or
 `xn--`, so no IP literal in any form (`127.1`, `0x7f.1` included). The parser keeps
 a stored `nip05` that 0.1.x accepted; `resolveKen` treats one that fails the strict
-check as unresolvable and never fetches it. The fetch is
+check as unresolvable and never fetches it. The same check is exported as
+`validateNip05(value)` from `./ken` (returns the value, throws on a bad one), so an app can pre-validate input and show its own message. The fetch is
 hardened: `redirect:'error'` (NIP-05 requires ignoring redirects), a bounded
 timeout, a size-capped body read before `JSON.parse`, and both halves lowercased
 before querying/looking up (NIP-05 names are case-insensitive).

@@ -117,7 +117,8 @@ const present = discoverPresent(parseFilter(pub.blob), myEntries, myPersonaPubHe
   kind-31000 `status:revoked` event at the attestation's own address),
   `retractBondAssertion(assertion, { attesterPubHex, subjectPubHex })` (supplement —
   kind-5 deletion with `e`/`a`/`k` tags), `KINDRED_BOND_NAMESPACE`.
-- `./ken` — `pinKen`, `pinKenFromNip05`, `buildKeyControlChallenge`,
+- `./ken` — `pinKen`, `pinKenFromNip05`, `validateNip05` (the strict NIP-05 shape
+  check they apply; throws on a bad value), `buildKeyControlChallenge`,
   `verifyKeyControl` (opt-in `opts` for freshness/verifier-tag binding),
   `attributeSignature`, `resolveKen` (flags a rollback via `rotation.rollback`),
   `acceptKenRotation` (throws on a revoked entry / already accepted / self-rotation /
