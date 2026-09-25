@@ -1,7 +1,7 @@
 // kenspeckle ./discovery — local presence intersection over a sibling `tessera-kit` membership filter,
 // plus signed Nostr filter publications (kind 30444) and the opt-out request (kind 30445).
 //
-// Spec: signet-plans/docs/plans/2026-06-02-kenspeckle-primitive-spec.md §8 (discovery) + §11 (opt-out).
+// Spec: PROTOCOL.md (discovery and opt-out).
 // Publication shape matches tessera-kit PROTOCOL.md §6 byte-for-byte (kind 30444, d-tag
 // `kindred:members:<namespace>:<serverId>`, indexable `['n', namespace]` tag, base64-of-KFLT-blob
 // content). The `namespace` is reverse-DNS-style and MUST be colon-free — a colon would make the
