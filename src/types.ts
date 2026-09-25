@@ -1,5 +1,5 @@
 // kenspeckle (main export) — relationship model types.
-// Source of truth: PROTOCOL.md.
+// Source of truth: PROTOCOL.md §9 (canonical entry serialisation).
 
 import type { EventTemplate, Event as NostrEvent, Filter as NostrFilter } from 'nostr-tools'
 

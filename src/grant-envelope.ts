@@ -1,5 +1,5 @@
 // Companion data rail — the wire envelope shared by signet-app (sharer) and an
-// owner-controlled companion app (consumer). See PROTOCOL.md.
+// owner-controlled companion app (consumer). See PROTOCOL.md §10.
 import type { KindredEntry, KinEntry } from './types.js'
 
 /** Secret-stripped "read & pick" view of a contact. Structurally omits
