@@ -50,20 +50,12 @@ share one event type) — install it alongside.
 
 ### The `@forgesworn/tessera-kit` sibling dependency
 
-kenspeckle depends on [`@forgesworn/tessera-kit`](https://github.com/forgesworn/tessera-kit), a
-sibling that is **not yet on npm**. `package.json` currently resolves it as a
-**pinned git dependency** (a `git+https://github.com/forgesworn/tessera-kit.git#<commit>`
-spec — a specific commit, not a moving branch/tag), which `npm ci`/`npm install`
-clone directly; nothing to pack or symlink locally. Cloning that private repo needs
-read access — CI authenticates via a short-lived, install-scoped PAT (see
-`.github/workflows/ci.yml`); an external installer needs their own read access to
-`forgesworn/tessera-kit` (or the maintainers to publish it to npm) for `npm i
-@forgesworn/kenspeckle` to succeed. A `scripts/check-publishable-deps.mjs` guard
-runs in `prepack` and CI and **refuses to publish** while any `dependencies` /
-`optionalDependencies` / `peerDependencies` entry is a git/file/http(s) spec — so kenspeckle cannot ship to
-npm with this dependency unresolved to a registry version. Once
-`@forgesworn/tessera-kit` is published, repoint this dependency to a plain npm
-semver range before the next `kenspeckle` publish.
+kenspeckle depends on [`@forgesworn/tessera-kit`](https://github.com/forgesworn/tessera-kit)
+(`^0.2.0`, from npm), which provides the signed membership filters that discovery
+verifies. A `scripts/check-publishable-deps.mjs` guard runs in `prepack` and
+**refuses to publish** while any `dependencies` / `optionalDependencies` /
+`peerDependencies` entry is a git/file/http(s) spec, so kenspeckle can only ship
+against registry versions.
 
 ## Quick start
 

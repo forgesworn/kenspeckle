@@ -8,23 +8,14 @@ cd kenspeckle
 npm install
 ```
 
-> **Local dependency note.** `@forgesworn/kenspeckle` depends on
-> `@forgesworn/tessera-kit`, a sibling not yet on npm. `package.json` resolves it
-> as a **pinned git dependency** (`git+https://github.com/forgesworn/tessera-kit.git#<commit>`
-> — a specific commit, not a moving branch/tag), so a plain `npm install`/`npm ci`
-> clones it directly; there is nothing to pack or symlink locally. Cloning the
-> (private) repo needs read access — CI authenticates via a short-lived,
-> install-step-scoped PAT (`FORGESWORN_READ_PAT`, see `.github/workflows/ci.yml`);
-> for local development, make sure your own `git` can reach
-> `github.com/forgesworn/tessera-kit` (SSH key or a PAT in your global git config)
-> before running `npm install`.
+> **Dependency note.** `@forgesworn/kenspeckle` depends on
+> `@forgesworn/tessera-kit` (`^0.2.0`) from npm, so a plain `npm install` / `npm ci`
+> is all you need.
 >
 > `scripts/check-publishable-deps.mjs` runs in `prepack` (every `npm pack` / `npm publish`) and **refuses to
 > publish** while any `dependencies`/`optionalDependencies`/`peerDependencies` entry is a git/file/http(s)
-> spec — so this cannot accidentally ship to npm while the dependency is
-> unresolved. Once `@forgesworn/tessera-kit` is published, repoint this dependency
-> to a plain npm semver range (`npm install @forgesworn/tessera-kit@^X.Y.Z`)
-> before the next `kenspeckle` release.
+> spec. If you ever point a dependency at a git commit or local path for development, move it back to a
+> registry range before releasing.
 
 ## Commands
 

@@ -22,14 +22,9 @@ Signet ecosystem, consumed by signet-app.
 npm i @forgesworn/kenspeckle
 ```
 
-`@forgesworn/tessera-kit` is a sibling NOT YET ON NPM. `package.json` currently resolves it as a
-TEMPORARY `file:../tessera-kit` path dependency (migrating onto tessera-kit 0.2.0, ahead of that
-release being published) — this only resolves in a checkout with `tessera-kit` cloned as a sibling
-directory; nothing an external installer can use as-is. Once tessera-kit 0.2.0 is published to npm,
-this reverts to a plain semver range. `scripts/check-publishable-deps.mjs` runs in `prepack` (so on
-`npm pack` and `npm publish`) and in CI, and REFUSES to publish while any
-dependency/optionalDependency/peerDependency is a git/file/http(s) spec, so this cannot ship to npm
-unresolved.
+`@forgesworn/tessera-kit` (^0.2.0) is an ordinary npm dependency. `scripts/check-publishable-deps.mjs`
+runs in `prepack` (so on `npm pack` and `npm publish`) and refuses to publish while any
+dependency/optionalDependency/peerDependency is a git/file/http(s) spec.
 
 ```typescript
 import { deriveBondSecret, deriveCeremonyCounter, bondWords, verifyBondWord } from '@forgesworn/kenspeckle/bond'
