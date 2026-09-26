@@ -4,7 +4,7 @@ All notable changes to `@forgesworn/kenspeckle` are documented here. The format 
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] — Unreleased
+## [0.2.0] — 2026-09-26
 
 Security-audit fix pass over `ken`/`discovery`/`model`/`validate`/`types` and
 over `handshake`/`bond`/`invite`/`grant-envelope`/`backup`/`companion-rail`, plus
@@ -371,7 +371,7 @@ this section, and the individually marked entries in the sections after it.
   a consumer doing an in-person ceremony should use it instead of picking its
   own counter.
 
-## [0.1.0] — Unreleased
+## [0.1.0] — never published
 
 First public release: **verified relationships across three social distances** —
 *kin* (family), *kith* (mutually verified), *ken* (one-way recognised) — with an
