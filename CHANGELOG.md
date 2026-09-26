@@ -85,12 +85,9 @@ this section, and the individually marked entries in the sections after it.
   every stored filter blob with `signFilterBlob(unsigned, priv, context)`
   using the new required `context` argument; ensure `namespace` never
   contains a colon.
-- **`@forgesworn/tessera-kit` is pinned to the 0.2.0 commit**
-  `7ffded7b019b851f57bc1760b92cdda3f05a1b08` (git+https) ahead of its npm release.
-  `scripts/check-publishable-deps.mjs` (`prepack`) still refuses to publish while
-  it is a git dependency; move to a semver range once 0.2.0 is on npm. Opts
-  validation now uses tessera-kit's exported `isValidFilterContext` instead of a
-  local reimplementation.
+- **`@forgesworn/tessera-kit` is now `^0.2.0` from npm** (was a pinned
+  `git+https://…` dependency). Opts validation uses tessera-kit's exported
+  `isValidFilterContext` instead of a local reimplementation.
 - **L6 — `disclosureFor` now takes the parsed `MembershipFilter`, not
   `{ salt? }`.** The old signature derived `keyed` from salt PRESENCE, a second
   source of truth that could disagree with the filter's own `keyed` flag. Callers
