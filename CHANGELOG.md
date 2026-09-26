@@ -287,10 +287,10 @@ this section, and the individually marked entries in the sections after it.
   `@scure/*`, `nostr-tools`, `nostr-attestations`, `spoken-token`, and `@forgesworn/*` (they get their
   own individual PR); `dependabot-auto-merge.yml` also refuses to auto-merge any
   PR touching one of them by name, as defense in depth.
-- **L10 — `ci.yml`:** adds a top-level `permissions: contents: read`; the
-  install-scoped `FORGESWORN_READ_PAT` git-credential rewrite is now explicitly
-  revoked immediately after `npm ci` (`if: always()`) instead of staying live in
-  the global git config through typecheck/build/vectors/test; fixes the
+- **L10 — `ci.yml`:** adds a top-level `permissions: contents: read`; removes the
+  `FORGESWORN_READ_PAT` git-credential steps entirely (every dependency now comes
+  from npm, so the install needs no git credentials), and the pack step now runs
+  the real `prepack` publishable-deps guard; fixes the
   `actions/setup-node` pin comment (said `# v6`, the SHA was already `v7.0.0`).
 - **L11 — `dependabot.yml`'s `nostr-tools` ignore-rule comment corrected:** it
   claimed "repos pin 2.23.9", but the actual devDependency here is `^2.24.1`.
