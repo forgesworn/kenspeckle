@@ -405,6 +405,10 @@ record onto `KinEntry`/`KithEntry`/`ken`, persists `KindredEntry` in IndexedDB, 
 keeps tier/badge enrichment app-side. The byte-exact ECDH (PROTOCOL.md §1) is what
 makes that migration lossless.
 
+## Roadmap
+
+What has shipped, what is open and what each open item is blocked on: [ROADMAP.md](./ROADMAP.md).
+
 ## Licence
 
 MIT.

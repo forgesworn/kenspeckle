@@ -169,6 +169,7 @@ PINNED server key before trusting any hit. Full posture in SECURITY.md.
 ## Optional
 
 - [README](https://github.com/forgesworn/kenspeckle/blob/main/README.md): usage guide with kith / ken / discovery quickstarts
+- [ROADMAP.md](https://github.com/forgesworn/kenspeckle/blob/main/ROADMAP.md): shipped vs open work, what is blocked on what, and how an agent should pick up the next item
 - [PROTOCOL.md](https://github.com/forgesworn/kenspeckle/blob/main/PROTOCOL.md): byte-exact ECDH + frozen migration vector, spoken-token usage, kind/tag allocation, invite canonical bytes, build/parse asymmetry
 - [SECURITY.md](https://github.com/forgesworn/kenspeckle/blob/main/SECURITY.md): honest privacy posture (persona-scoping limits, NIP-05 TOFU, key-control vs attribution, annotations-never-serialised, pin-verify mandatory)
 - [@forgesworn/tessera-kit](https://github.com/forgesworn/tessera-kit): the membership-presence filter @forgesworn/kenspeckle/discovery consumes
