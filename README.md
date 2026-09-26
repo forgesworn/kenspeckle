@@ -51,7 +51,7 @@ share one event type) — install it alongside.
 ### The `@forgesworn/tessera-kit` sibling dependency
 
 kenspeckle depends on [`@forgesworn/tessera-kit`](https://github.com/forgesworn/tessera-kit)
-(`^0.2.0`, from npm), which provides the signed membership filters that discovery
+(`^0.2.1`, from npm), which provides the signed membership filters that discovery
 verifies. A `scripts/check-publishable-deps.mjs` guard runs in `prepack` and
 **refuses to publish** while any `dependencies` / `optionalDependencies` /
 `peerDependencies` entry is a git/file/http(s) spec, so kenspeckle can only ship

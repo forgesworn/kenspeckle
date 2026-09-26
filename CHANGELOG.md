@@ -85,7 +85,7 @@ this section, and the individually marked entries in the sections after it.
   every stored filter blob with `signFilterBlob(unsigned, priv, context)`
   using the new required `context` argument; ensure `namespace` never
   contains a colon.
-- **`@forgesworn/tessera-kit` is now `^0.2.0` from npm** (was a pinned
+- **`@forgesworn/tessera-kit` is now `^0.2.1` from npm** (was a pinned
   `git+https://…` dependency). Opts validation uses tessera-kit's exported
   `isValidFilterContext` instead of a local reimplementation.
 - **L6 — `disclosureFor` now takes the parsed `MembershipFilter`, not

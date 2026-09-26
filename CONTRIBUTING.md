@@ -9,7 +9,7 @@ npm install
 ```
 
 > **Dependency note.** `@forgesworn/kenspeckle` depends on
-> `@forgesworn/tessera-kit` (`^0.2.0`) from npm, so a plain `npm install` / `npm ci`
+> `@forgesworn/tessera-kit` (`^0.2.1`) from npm, so a plain `npm install` / `npm ci`
 > is all you need.
 >
 > `scripts/check-publishable-deps.mjs` runs in `prepack` (every `npm pack` / `npm publish`) and **refuses to

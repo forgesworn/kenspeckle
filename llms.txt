@@ -22,7 +22,7 @@ Signet ecosystem, consumed by signet-app.
 npm i @forgesworn/kenspeckle
 ```
 
-`@forgesworn/tessera-kit` (^0.2.0) is an ordinary npm dependency. `scripts/check-publishable-deps.mjs`
+`@forgesworn/tessera-kit` (^0.2.1) is an ordinary npm dependency. `scripts/check-publishable-deps.mjs`
 runs in `prepack` (so on `npm pack` and `npm publish`) and refuses to publish while any
 dependency/optionalDependency/peerDependency is a git/file/http(s) spec.
 
